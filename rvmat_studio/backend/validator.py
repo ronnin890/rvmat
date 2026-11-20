@@ -79,6 +79,8 @@ def validate(m: Material, project_root: Optional[Path] = None,
         tex = s.texture
         if tex is None:
             add(Severity.ERROR, "E210", "У стадии нет texture", f"{base}.texture")
+        elif tex.strip() == "":
+            add(Severity.WARNING, "W212", "Текстура не назначена (пустой путь)", f"{base}.texture")
         elif is_procedural(tex):
             err = check_procedural(tex)
             if err:

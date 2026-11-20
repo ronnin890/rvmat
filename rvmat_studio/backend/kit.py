@@ -37,6 +37,10 @@ class State(str, enum.Enum):
         return "" if self is State.BASE else "_" + self.value
 
     @property
+    def is_decorative(self) -> bool:
+        return self.value.startswith("decorative")
+
+    @property
     def confirmed(self) -> bool:
         """Подтверждено ли правило Stage3 образцами."""
         return self is not State.BASE
@@ -74,16 +78,19 @@ class KitSpec:
     name: str
     shared: Material
     overrides: dict[State, dict[str, Any]] = field(default_factory=dict)
-    # отдельный шаблон для decorative-ветки (другие текстуры), если задан
-    decorative_base: Optional[Material] = None
+    # переопределения, общие для всех decorative_* состояний (напр. другие текстуры);
+    # применяются поверх shared, но ниже индивидуальных overrides состояния
+    decorative: dict[str, Any] = field(default_factory=dict)
 
     def render(self, state: State) -> Material:
-        src = self.decorative_base if (self.decorative_base and state.value.startswith("decorative")) else self.shared
-        m = src.clone()
+        m = self.shared.clone()
         st3 = m.stage(CONDITION_STAGE)
         if st3 is None:
             st3 = m.add_stage(CONDITION_STAGE, default_stage3(state))
         st3.texture = default_stage3(state)
+        if state.is_decorative:
+            for path, val in self.decorative.items():
+                apply_override(m, path, val)
         for path, val in self.overrides.get(state, {}).items():
             apply_override(m, path, val)
         return m
@@ -134,3 +141,23 @@ def diff_materials(a: Material, b: Material) -> list[tuple[str, Any, Any]]:
         return out
     fa, fb = flat(a), flat(b)
     return [(k, fa.get(k), fb.get(k)) for k in sorted(set(fa) | set(fb)) if fa.get(k) != fb.get(k)]
+
+
+def flatten_values(m: Material) -> dict[str, Any]:
+    """Плоский словарь путь -> значение (числа/списки/строки) для сравнения и импорта."""
+    out: dict[str, Any] = {}
+
+    def walk(node, prefix):
+        for n in node.body:
+            if hasattr(n, "value"):
+                v = n.value
+                out[prefix + n.name] = (v.floats() if v.kind == "array" and all(i.kind == "num" for i in v.items)
+                                        else (float(v.raw) if v.kind == "num" else v.text))
+            elif hasattr(n, "body"):
+                walk(n, prefix + n.name + ".")
+    walk(m.root, "")
+    return out
+
+
+def get_value(m: Material, path: str):
+    return flatten_values(m).get(path)

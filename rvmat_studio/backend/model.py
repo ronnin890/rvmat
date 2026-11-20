@@ -77,6 +77,23 @@ class Stage:
             self.node.body.append(n)
         n.set_prop(key, Value.array(values), True)
 
+    # Удобная параметризация UV (интерпретация матрицы: u' = aside.x*u + up.x*v + pos.x, ...)
+    def uv_params(self) -> dict:
+        import math
+        a, u, p = self.uv("aside") or [1, 0, 0], self.uv("up") or [0, 1, 0], self.uv("pos") or [0, 0, 0]
+        su, sv = math.hypot(a[0], a[1]), math.hypot(u[0], u[1])
+        return {"tile_u": su, "tile_v": sv, "offset_u": p[0], "offset_v": p[1],
+                "rotation": math.degrees(math.atan2(a[1], a[0]))}
+
+    def set_uv_params(self, tile_u=1.0, tile_v=1.0, offset_u=0.0, offset_v=0.0, rotation=0.0):
+        import math
+        c, s = math.cos(math.radians(rotation)), math.sin(math.radians(rotation))
+        cur = self.uv("pos") or [0, 0, 0]
+        r = lambda x: round(x, 6) + 0.0
+        self.set_uv("aside", [r(tile_u * c), r(tile_u * s), 0])
+        self.set_uv("up", [r(-tile_v * s), r(tile_v * c), 0])
+        self.set_uv("pos", [offset_u, offset_v, cur[2]])
+
     def ensure_uv(self):
         for k, v in DEFAULT_UV.items():
             if self.uv_node is None or self.uv_node.get_prop(k) is None:

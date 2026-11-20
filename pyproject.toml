@@ -1,10 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "rvmat-studio"
 version = "0.1.0"
+description = "DayZ RVMAT Studio — визуальный редактор и генератор материалов .rvmat"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["PySide6>=6.6", "numpy>=1.26", "Pillow>=10.0"]
+
 [project.optional-dependencies]
-gui = ["PySide6>=6.6"]
-dev = ["pytest"]
+dev = ["pytest", "pyinstaller"]
+
+[project.scripts]
+rvmat-studio = "rvmat_studio.gui.app:main"
+rvmat-cli = "rvmat_studio.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["rvmat_studio*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: rvmat-studio
+Version: 0.1.0
+Requires-Python: >=3.10
+Provides-Extra: gui
+Requires-Dist: PySide6>=6.6; extra == "gui"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

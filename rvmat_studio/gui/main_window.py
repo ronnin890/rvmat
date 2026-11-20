@@ -285,6 +285,7 @@ class MainWindow(QMainWindow):
         s4 = a.stage(4)
         self.preview.uv_bg = self.resolver(self.proj.base_color) if self.proj.base_color else (self.resolver(s4.texture) if s4 and s4.texture else None)
         self.preview.opts.base_color = self.resolver(self.proj.base_color) if self.proj.base_color else None
+        self.preview.opts.normal_strength = self.proj.slot.normal_strength
         self.preview.set_materials(a, b, self.resolver, self._parts_mats(st), self._parts_mats(cmp_state) if cmp_state else None)
 
     def _parts_mats(self, state):
@@ -296,7 +297,7 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(mesh.part_names):
             sl = self.proj.slot_for_part(name)
             base = self.resolver(sl.base_color) if sl.base_color else None
-            out[i] = (self.proj.slot_effective(sl, state), base)
+            out[i] = (self.proj.slot_effective(sl, state), base, sl.normal_strength)
         return out
 
     def on_part_selected(self, idx: int):

@@ -47,7 +47,7 @@ out vec4 frag;
 uniform sampler2D tNormal, tDetail, tAs, tSmdi, tHdri, tBase;
 uniform int hasN, hasD, hasA, hasS, hasH, hasB, detailMode;
 uniform vec4 mN, mD, mA, mS; uniform vec2 oN, oD, oA, oS;     // uv' = [m.x m.y; m.z m.w]*uv + off
-uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn;
+uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn, nStr;
 uniform vec3 amb, dif, forced, emi, spc, detailConst, sunDir, sunCol, skyTop, skyHor, skyGnd;
 uniform int view; uniform float hl;
 vec2 tx(vec4 m, vec2 o, vec2 uv){ return vec2(m.x*uv.x + m.y*uv.y, m.z*uv.x + m.w*uv.y) + o; }
@@ -87,7 +87,10 @@ void main(){
     if (hasN == 1) {
         vec4 nm = texture(tNormal, tx(mN, oN, uv));
         float nx = nm.r * 2.0 - 1.0, ny = nm.g * 2.0 - 1.0;
-        float nz = sqrt(clamp(1.0 - nx*nx - ny*ny, 0.0, 1.0));
+        float r2 = nx*nx + ny*ny;
+        if (r2 > 1.0) { float k = inversesqrt(r2); nx *= k; ny *= k; }
+        float nz = max(sqrt(clamp(1.0 - nx*nx - ny*ny, 0.0, 1.0)), 0.05);
+        nx *= nStr; ny *= nStr;
         Nf = normalize(T * nx + B * ny + N * nz);
     }
     float specI = 1.0, metal = 0.0, gloss = 0.5, glow = 0.0;
@@ -292,7 +295,7 @@ class GLScene:
         p = self.prog
         p.bind()
         cam_uniforms(p)
-        def apply(mat, base, hl):
+        def apply(mat, base, hl, nstr):
             unit = 0
 
             def bind_stage(idx, sampler, flag, mname, oname):
@@ -360,6 +363,7 @@ class GLScene:
             views = {"final": 0, "albedo": 1, "normal": 2, "specular": 3, "metal": 4, "gloss": 5, "emissive": 6, "detail": 7, "checker": 8, "ao": 9}
             _set(p, "view", views.get(o.view, 0))
             _set(p, "hl", float(hl))
+            _set(p, "nStr", float(nstr))
 
         default_base = getattr(o, "base_color", None)
         self.vao.bind()
@@ -368,11 +372,11 @@ class GLScene:
             for pid, (cnt_start, cnt) in enumerate(self.ranges):
                 if not cnt:
                     continue
-                m_, b_ = part_mats.get(pid, (mat, default_base))
-                apply(m_, b_, 1.0 if pid == o.highlight else 0.0)
+                m_, b_, *ex = part_mats.get(pid, (mat, default_base))
+                apply(m_, b_, 1.0 if pid == o.highlight else 0.0, ex[0] if ex else o.normal_strength)
                 f.glDrawElements(GL_TRIANGLES, cnt * 3, GL_UNSIGNED_INT, shiboken6.VoidPtr(cnt_start * 12))
         else:
-            apply(mat, default_base, 0.0)
+            apply(mat, default_base, 0.0, o.normal_strength)
             f.glDrawElements(GL_TRIANGLES, self.n_idx, GL_UNSIGNED_INT, _NULL)
         _chk(f, 'draw mesh')
         self.vao.release()

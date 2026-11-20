@@ -24,6 +24,7 @@ class Slot:
         self.spec = KitSpec(name, material or super_template())
         self.baseline = self.spec.shared.clone()     # для «сброса» общих параметров
         self.base_color = ""                          # физический файл _co для предпросмотра (в RVMAT НЕ пишется)
+        self.normal_strength = 1.0                    # усиление нормали — только предпросмотр
 
     @property
     def name(self) -> str:
@@ -31,7 +32,8 @@ class Slot:
 
     def to_dict(self) -> dict:
         return {"name": self.name, "rvmat": self.spec.shared.to_text(), "decorative": self.spec.decorative,
-                "overrides": {s.value: v for s, v in self.spec.overrides.items() if v}, "base_color": self.base_color}
+                "overrides": {s.value: v for s, v in self.spec.overrides.items() if v}, "base_color": self.base_color,
+                "normal_strength": self.normal_strength}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Slot":
@@ -39,6 +41,7 @@ class Slot:
         sl.spec.decorative = d.get("decorative", {})
         sl.spec.overrides = {State(k): v for k, v in d.get("overrides", {}).items()}
         sl.base_color = d.get("base_color", "")
+        sl.normal_strength = float(d.get("normal_strength", 1.0))
         sl.baseline = sl.spec.shared.clone()
         return sl
 
@@ -228,6 +231,12 @@ class Project:
         self.base_color = str(path or "")
         if path and str(path) not in self.textures:
             self.textures.append(str(path))
+        self._notify()
+
+    def set_normal_strength(self, v: float):
+        """Сила нормали в предпросмотре активного материала (в RVMAT не записывается)."""
+        self._change("Сила нормали (превью)")
+        self.slot.normal_strength = max(0.0, float(v))
         self._notify()
 
     def rename(self, name: str):

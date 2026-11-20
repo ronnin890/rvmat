@@ -59,6 +59,7 @@ class RenderOptions:
     grid: bool = False
     ssaa: int = 1
     highlight: int = -1          # индекс части (селекшена) для подсветки
+    normal_strength: float = 1.0   # только предпросмотр: усиление нормали (в RVMAT такого параметра нет)
     base_color: object = None   # RGBA float32 [0..1]: _co с текстуры грани модели (в RVMAT его НЕТ)
     hdri: object = None
 
@@ -371,7 +372,11 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     nm = get(1)
     if nm is not None:
         nx, ny = nm[:, 0] * 2 - 1, nm[:, 1] * 2 - 1
-        nz = np.sqrt(np.clip(1 - nx * nx - ny * ny, 0, 1))
+        r2 = nx * nx + ny * ny
+        k = np.where(r2 > 1, 1 / np.sqrt(np.maximum(r2, 1e-8)), 1).astype(f32)     # шум сжатия: |XY| ≤ 1
+        nx, ny = nx * k, ny * k
+        nz = np.maximum(np.sqrt(np.clip(1 - nx * nx - ny * ny, 0, 1)), 0.05)        # Z — по исходной нормали (не вырождается в 0)
+        nx, ny = nx * f32(o.normal_strength), ny * f32(o.normal_strength)   # сила: масштабируем только XY, затем перенормировка
         nrm_f = tan * nx[:, None] + bit * ny[:, None] + nrm * nz[:, None]
         nrm_f /= np.maximum(np.linalg.norm(nrm_f, axis=1, keepdims=True), 1e-8)
     else:
@@ -450,7 +455,7 @@ def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional
            cache: Optional[RenderCache] = None, part_mats: Optional[dict] = None) -> np.ndarray:
     """-> RGBA uint8 (H,W,4).
 
-    part_mats: {индекс части: (Material, base_color)} — материал для каждой части (селекшена) модели;
+    part_mats: {индекс части: (Material, base_color[, сила_нормали])} — материал для каждой части (селекшена) модели;
     части без записи рисуются материалом `mat` и `o.base_color`."""
     import copy
     mesh = mesh or get_shape(o.shape)
@@ -472,7 +477,7 @@ def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional
             part_px = mesh.face_part[geo.tri]
             done = np.zeros(len(part_px), bool)
             for pid in sorted(part_mats):
-                m_, base_ = part_mats[pid]
+                m_, base_, *extra = part_mats[pid]
                 sel = part_px == pid
                 if not sel.any():
                     continue
@@ -482,6 +487,8 @@ def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional
                     sub = geo.subs[pid] = geo.subset(sel)
                 op = copy.copy(o)
                 op.base_color = base_
+                if extra:
+                    op.normal_strength = extra[0]
                 ys, xs, col = shade(sub, m_, op, resolve)
                 img[ys, xs] = col
             rest = ~done

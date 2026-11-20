@@ -6,13 +6,14 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QTabWidget, QToolButton,
+                               QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QToolButton,
                                QVBoxLayout, QWidget, QGridLayout)
 
 from ..backend import State
 from ..backend.kit import get_value
 from ..backend.model import COLOR_PARAMS, UV_KEYS
 from ..backend.procedural import is_procedural, make_color, make_fresnel, parse_procedural
+from ..core import simple as S
 from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
 from ..core.textures import STAGE_ROLE
 from .widgets import ColorRow, ParamRow, pixmap_from_rgba
@@ -250,7 +251,11 @@ class PropertiesPanel(QWidget):
         v.addWidget(self.tabs, 1)
 
         gen = QWidget()
-        gl = QVBoxLayout(gen)
+        top = QVBoxLayout(gen)
+        top.addWidget(self._build_quick())
+        adv_body = QWidget()
+        gl = QVBoxLayout(adv_body)
+        gl.setContentsMargins(0, 0, 0, 0)
         self.colors = {}
         for name in COLOR_PARAMS:
             r = ColorRow(COLOR_LABELS[name])
@@ -280,21 +285,99 @@ class PropertiesPanel(QWidget):
         b_clr.clicked.connect(lambda: self.proj.set_base_color(""))
         for w_ in (self.base_lbl, b_base, b_clr):
             bl.addWidget(w_)
-        gl.addWidget(bg)
+        top.addWidget(bg)
+        self.adv = QToolButton()                      # обычная кнопка, а не checkable QGroupBox: тот отключает вложенные виджеты
+        self.adv.setCheckable(True)
+        self.adv.setChecked(False)
+        self.adv.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.adv.setStyleSheet("QToolButton { text-align: left; padding: 6px; font-weight: 600; }")
+        self.adv.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        def _toggle(on):
+            adv_body.setVisible(on)
+            self.adv.setText(("▾ " if on else "▸ ") + "Подробно: цвета RGBA, Specular Power, шейдеры (поля RVMAT как есть)")
+        self.adv.toggled.connect(_toggle)
+        _toggle(False)
+        top.addWidget(self.adv)
+        top.addWidget(adv_body)
         self.unknown = QLabel("")
         self.unknown.setObjectName("hint"); self.unknown.setWordWrap(True)
-        gl.addWidget(self.unknown)
-        gl.addStretch()
-        self.tabs.addTab(self._scroll(gen), "Общие")
+        top.addWidget(self.unknown)
+        top.addStretch()
+        self.tabs.addTab(self._scroll(gen), "Материал")
         self.stage_eds: dict[int, StageEditor] = {}
         for i in range(1, 8):
             ed = StageEditor(self, i)
             self.stage_eds[i] = ed
             self.tabs.addTab(self._scroll(ed), f"S{i}")
-        self.tabs.setTabToolTip(0, "Общие параметры материала")
+        self.tabs.setTabToolTip(0, "Быстрая настройка материала и все его поля")
         for i in range(1, 8):
             self.tabs.setTabToolTip(i, STAGE_ROLE[i])
         self.refresh()
+
+    def _build_quick(self) -> QGroupBox:
+        """Ползунки «по смыслу»: двигаете — материал становится глаже/металличнее/ярче; пишутся реальные поля RVMAT."""
+        box = QGroupBox("Быстрая настройка")
+        lay = QVBoxLayout(box)
+        self.quick: dict[str, ParamRow] = {}
+        self.quick_note: dict[str, QLabel] = {}
+        for key, (title, left, right, fields, why) in S.CONTROLS.items():
+            row = ParamRow(title, 0, 100, 1, 0)
+            row.label.setMinimumWidth(130)
+            row.spin.setSuffix(" %")
+            row.setToolTip(why)
+            row.changed.connect(lambda v, k=key: self._quick_changed(k, v))
+            row.reset.connect(lambda k=key: self._quick_reset(k))
+            note = QLabel(f"0 — {left}   ·   100 — {right}")
+            note.setObjectName("hint")
+            note.setWordWrap(True)
+            note.setToolTip(why)
+            self.quick[key], self.quick_note[key] = row, note
+            lay.addWidget(row)
+            lay.addWidget(note)
+        nrow = ParamRow("Сила нормали", 0, 300, 5, 0)
+        nrow.label.setMinimumWidth(130)
+        nrow.spin.setSuffix(" %")
+        nrow.setToolTip("Только предпросмотр: в RVMAT такого параметра нет — рельеф задаёт сама текстура _nohq.")
+        nrow.changed.connect(lambda v: None if self._lock else self.proj.set_normal_strength(v / 100.0))
+        nrow.reset.connect(lambda: self.proj.set_normal_strength(1.0))
+        nnote = QLabel("0 — плоско   ·   100 — как в текстуре   ·   300 — втрое сильнее.  Только предпросмотр, в RVMAT не пишется.")
+        nnote.setObjectName("hint"); nnote.setWordWrap(True)
+        self.quick["normal"], self.quick_note["normal"] = nrow, nnote
+        lay.addWidget(nrow)
+        lay.addWidget(nnote)
+        return box
+
+    def _quick_changed(self, key: str, value: float):
+        if self._lock:
+            return
+        m = self.view_material()
+        fn = {"rough": S.set_roughness, "shine": S.set_shine, "metal": S.set_metallic, "glow": S.set_glow}[key]
+        label = S.CONTROLS[key][0]
+        for path, val in fn(m, value).items():          # одна правка пользователя = один шаг отмены
+            self.set_value(path, val, label)
+
+    def _quick_reset(self, key: str):
+        for path in S.CONTROLS[key][3]:
+            self.reset(path)
+
+    def _refresh_quick(self, m, ov):
+        vals = {"rough": S.roughness(m), "shine": S.shine(m), "metal": S.metallic(m), "glow": S.glow(m)}
+        for key, row in self.quick.items():
+            if key == "normal":
+                row.set_value(self.proj.slot.normal_strength * 100.0)
+                row.set_overridden(abs(self.proj.slot.normal_strength - 1.0) > 1e-6)
+                continue
+            row.set_value(round(vals[key]))
+            row.set_overridden(any(ov(p) for p in S.CONTROLS[key][3]))
+        pw = m.get("specularPower") or 0
+        sp, df = m.get("specular") or [0, 0, 0], m.get("diffuse") or [0, 0, 0]
+        em = m.get("emmisive") or [0, 0, 0]
+        hints = {"rough": f"→ specularPower = {pw:g}", "shine": f"→ specular = {S.mean_rgb(sp):.2f}",
+                 "metal": f"→ diffuse = {S.mean_rgb(df):.2f}, specular = {S.mean_rgb(sp):.2f}", "glow": f"→ emmisive = {S.mean_rgb(em):.2f}"}
+        for key, txt in hints.items():
+            left, right = S.CONTROLS[key][1], S.CONTROLS[key][2]
+            self.quick_note[key].setText(f"0 — {left}   ·   100 — {right}\n{txt}")
 
     @staticmethod
     def _scroll(w):
@@ -347,6 +430,7 @@ class PropertiesPanel(QWidget):
                     r.set_values(v)
                 r.set_overridden(ov(n))
             self.base_lbl.setText(self.proj.base_color)
+            self._refresh_quick(m, ov)
             self.power.set_value(m.get("specularPower") or 0)
             self.power.set_overridden(ov("specularPower"))
             self.ps.setEditText(m.get("PixelShaderID") or "")

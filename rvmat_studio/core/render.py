@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 
 from ..backend import Material
 from ..backend.procedural import is_procedural, parse_procedural
-from .meshes import Mesh, SHAPES
+from .meshes import Mesh, SHAPES, get_shape
 from .textures import load_rgba
 
 DIFFERENCES = [
@@ -181,21 +181,12 @@ def project_mesh(mesh: Mesh, o: RenderOptions, W, H):
     return P, N, T, w, sx, sy, dist
 
 
-def rasterize(mesh: Mesh, sx, sy, w, W, H):
-    tri = np.full((H, W), -1, np.int32)
-    b0 = np.zeros((H, W), np.float32)
-    b1 = np.zeros((H, W), np.float32)
-    zb = np.zeros((H, W), np.float32)      # 1/w
-    iw = 1 / w
-    F = mesh.f
-    x, y = sx[F], sy[F]
-    area = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0]) - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
+def _raster_big(F, x, y, iw, area, ids, W, H, tri, b0, b1, zb):
     x0 = np.maximum(np.floor(x.min(1)).astype(int), 0)
     x1 = np.minimum(np.ceil(x.max(1)).astype(int), W - 1)
     y0 = np.maximum(np.floor(y.min(1)).astype(int), 0)
     y1 = np.minimum(np.ceil(y.max(1)).astype(int), H - 1)
-    ok = (np.abs(area) > 1e-9) & (x1 >= x0) & (y1 >= y0)
-    for i in np.nonzero(ok)[0]:
+    for i in ids:
         xs = np.arange(x0[i], x1[i] + 1) + 0.5
         ys = np.arange(y0[i], y1[i] + 1) + 0.5
         px, py = np.meshgrid(xs, ys)
@@ -210,25 +201,89 @@ def rasterize(mesh: Mesh, sx, sy, w, W, H):
         z = l0 * i0 + l1 * i1 + l2 * i2
         sl = (slice(y0[i], y1[i] + 1), slice(x0[i], x1[i] + 1))
         m = inside & (z > zb[sl])
-        if not m.any():
+        if m.any():
+            zb[sl][m] = z[m]
+            tri[sl][m] = i
+            b0[sl][m] = (l0 * i0 / z)[m]
+            b1[sl][m] = (l1 * i1 / z)[m]
+
+
+def rasterize(mesh: Mesh, sx, sy, w, W, H):
+    """Z-буфер. Мелкие треугольники обрабатываются пачками (векторизованно), крупные — по одному."""
+    tri = np.full((H, W), -1, np.int32)
+    b0 = np.zeros((H, W), np.float32)
+    b1 = np.zeros((H, W), np.float32)
+    zb = np.zeros((H, W), np.float32)      # 1/w
+    iw = (1 / w).astype(np.float32)
+    F = mesh.f
+    x, y = sx[F].astype(np.float32), sy[F].astype(np.float32)
+    area = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0]) - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
+    x0 = np.maximum(np.floor(x.min(1)).astype(np.int32), 0)
+    x1 = np.minimum(np.ceil(x.max(1)).astype(np.int32), W - 1)
+    y0 = np.maximum(np.floor(y.min(1)).astype(np.int32), 0)
+    y1 = np.minimum(np.ceil(y.max(1)).astype(np.int32), H - 1)
+    ok = (np.abs(area) > 1e-9) & (x1 >= x0) & (y1 >= y0)
+    size = np.maximum(x1 - x0, y1 - y0) + 1
+    frags = []
+    lo = 0
+    for hi in (4, 8, 16, 32, 64):
+        ids = np.nonzero(ok & (size > lo) & (size <= hi))[0]
+        lo = hi
+        if not len(ids):
             continue
-        zb[sl][m] = z[m]
-        tri[sl][m] = i
-        # перспективно-корректные барицентрики
-        b0[sl][m] = (l0 * i0 / z)[m]
-        b1[sl][m] = (l1 * i1 / z)[m]
+        step = max(1, 3_000_000 // (hi * hi))
+        ar = np.arange(hi, dtype=np.int32)
+        for k in range(0, len(ids), step):
+            t = ids[k:k + step]
+            gx = x0[t][:, None, None] + ar[None, None, :]
+            gy = y0[t][:, None, None] + ar[None, :, None]
+            px, py = gx + np.float32(0.5), gy + np.float32(0.5)
+            ax, ay = x[t, 0][:, None, None], y[t, 0][:, None, None]
+            bx, by = x[t, 1][:, None, None], y[t, 1][:, None, None]
+            cx, cy = x[t, 2][:, None, None], y[t, 2][:, None, None]
+            ar_ = area[t][:, None, None]
+            l1 = ((px - ax) * (cy - ay) - (cx - ax) * (py - ay)) / ar_
+            l2 = ((bx - ax) * (py - ay) - (px - ax) * (by - ay)) / ar_
+            l0 = 1 - l1 - l2
+            inside = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6) & (gx <= x1[t][:, None, None]) & (gy <= y1[t][:, None, None])
+            ti, yi, xi = np.nonzero(inside)
+            if not len(ti):
+                continue
+            L0, L1, L2 = l0[ti, yi, xi], l1[ti, yi, xi], l2[ti, yi, xi]
+            tt = t[ti]
+            i0, i1, i2 = iw[F[tt, 0]], iw[F[tt, 1]], iw[F[tt, 2]]
+            z = L0 * i0 + L1 * i1 + L2 * i2
+            pix = gy[ti, yi, 0].astype(np.int64) * W + gx[ti, 0, xi]
+            frags.append((pix, z, tt, L0 * i0 / z, L1 * i1 / z))
+    if frags:
+        pix = np.concatenate([f[0] for f in frags]); z = np.concatenate([f[1] for f in frags])
+        tt = np.concatenate([f[2] for f in frags]); fb0 = np.concatenate([f[3] for f in frags]); fb1 = np.concatenate([f[4] for f in frags])
+        order = np.argsort(z, kind="stable")           # дальние первыми, ближние перезаписывают (последний индекс побеждает)
+        pix, z, tt, fb0, fb1 = pix[order], z[order], tt[order], fb0[order], fb1[order]
+        tri.reshape(-1)[pix] = tt
+        b0.reshape(-1)[pix] = fb0
+        b1.reshape(-1)[pix] = fb1
+        zb.reshape(-1)[pix] = z
+    big = np.nonzero(ok & (size > 64))[0]
+    if len(big):
+        _raster_big(F, x, y, iw, area, big, W, H, tri, b0, b1, zb)
     return tri, b0, b1
 
 
-def shade(mesh, mat: Material, o: RenderOptions, resolve: TexResolver, P, N, T, tri, b0, b1, dist, W, H):
-    L = dict(LIGHTING.get(o.lighting, LIGHTING["Студия"]))
+class Geo:
+    """Геометрическая часть кадра (не зависит от материала): кэшируется между правками параметров."""
+    __slots__ = ("ys", "xs", "pos", "nrm", "tan", "bit", "uv", "view", "samples", "tri")
+
+
+def prep_geometry(mesh, P, N, T, tri, b0, b1, dist) -> Geo:
+    g = Geo()
     sel = tri >= 0
-    ys, xs = np.nonzero(sel)
+    g.ys, g.xs = np.nonzero(sel)
     t = tri[sel]
     B0, B1 = b0[sel][:, None], b1[sel][:, None]
     B2 = 1 - B0 - B1
     F = mesh.f[t]
-    interp = lambda A: A[F[:, 0]] * B0 + A[F[:, 1]] * B1 + A[F[:, 2]] * B2
+    interp = lambda A: (A[F[:, 0]] * B0 + A[F[:, 1]] * B1 + A[F[:, 2]] * B2).astype(np.float32)
     pos, nrm, tan, uv = interp(P), interp(N), interp(T), interp(mesh.uv)
     nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-8)
     view = np.array([0, 0, dist], np.float32) - pos
@@ -237,36 +292,56 @@ def shade(mesh, mat: Material, o: RenderOptions, resolve: TexResolver, P, N, T, 
     nrm = np.where(flip, -nrm, nrm)
     tan = tan - nrm * (tan * nrm).sum(1, keepdims=True)
     tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-8)
-    bit = np.cross(nrm, tan)
-    uv = uv * o.tiling
+    g.pos, g.nrm, g.tan, g.bit, g.uv, g.view = pos, nrm, tan, np.cross(nrm, tan).astype(np.float32), uv, view
+    g.samples = {}
+    g.tri = t
+    return g
+
+
+def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
+    L = dict(LIGHTING.get(o.lighting, LIGHTING["Студия"]))
+    f32 = np.float32
+    n = len(geo.uv)
+    nrm, tan, bit, view = geo.nrm, geo.tan, geo.bit, geo.view
 
     def stage_uv(i):
         s = mat.stage(i)
         M, off = _uv_matrix(s)
-        return uv @ M.T + off
+        return (geo.uv * f32(o.tiling)) @ M.T + off
 
-    def get(i):
+    def get(i, lin=False):
         s = mat.stage(i)
         if s is None or not o.stages_on.get(i, True) or not s.texture:
             return None
         tex = resolve(s.texture)
-        return None if tex is None else sample(tex, stage_uv(i))
+        if tex is None:
+            return None
+        M, off = _uv_matrix(s)
+        key = (i, s.texture, M.tobytes(), off.tobytes(), o.tiling, id(tex), lin)
+        r = geo.samples.get(key)
+        if r is None:
+            r = sample(tex, stage_uv(i)).astype(f32)
+            if lin:
+                r[:, :3] **= f32(2.2)
+            geo.samples[key] = (r, tex)     # держим tex, чтобы id() не переиспользовался
+            return r
+        return r[0]
 
-    col = lambda name, d: np.array((mat.get(name) or d)[:4], np.float32)
+    col = lambda name, d: np.array((mat.get(name) or d)[:4], f32)
     amb, dif, forced, emi, spc = col("ambient", [1] * 4), col("diffuse", [1] * 4), col("forcedDiffuse", [0, 0, 0, 1]), col("emmisive", [0] * 4), col("specular", [0] * 4)
     power = float(mat.get("specularPower") or 10)
 
-    albedo = get(4)
-    albedo = (albedo[:, :3] ** 2.2) if albedo is not None else np.full((len(uv), 3), 0.45, np.float32)
+    albedo = get(4, lin=True)
+    albedo = albedo[:, :3] if albedo is not None else np.full((n, 3), 0.45, f32)
     if o.view == "checker":
-        albedo = _checker(stage_uv(1))[:, :3] ** 2.2
+        albedo = _checker(stage_uv(1))[:, :3] ** f32(2.2)
     s2 = mat.stage(2)
-    detail = np.ones((len(uv), 3), np.float32)
+    detail = np.ones((n, 3), f32)
     if s2 and o.stages_on.get(2, True) and s2.texture:
         if is_procedural(s2.texture):
             pr = parse_procedural(s2.texture)
             if pr.rgba:
-                detail = np.tile(np.array(pr.rgba[:3], np.float32) * 2, (len(uv), 1))
+                detail = np.tile(np.array(pr.rgba[:3], f32) * 2, (n, 1))
         else:
             dt = get(2)
             if dt is not None:
@@ -280,19 +355,18 @@ def shade(mesh, mat: Material, o: RenderOptions, resolve: TexResolver, P, N, T, 
     else:
         nrm_f = nrm
     sm = get(5)
-    spec_i, metal, gloss, glow = (sm[:, 0], sm[:, 1], sm[:, 2], sm[:, 3]) if sm is not None else (np.ones(len(uv), np.float32), np.zeros(len(uv), np.float32), np.full(len(uv), 0.5, np.float32), np.zeros(len(uv), np.float32))
+    spec_i, metal, gloss, glow = (sm[:, 0], sm[:, 1], sm[:, 2], sm[:, 3]) if sm is not None else (np.ones(n, f32), np.zeros(n, f32), np.full(n, 0.5, f32), np.zeros(n, f32))
 
-    # свет
     ang = math.radians(o.light_rot)
-    s = np.array(L["sun"], np.float32)
-    s = np.array([s[0] * math.cos(ang) + s[2] * math.sin(ang), s[1], -s[0] * math.sin(ang) + s[2] * math.cos(ang)], np.float32)
-    s /= np.linalg.norm(s)
-    lam = np.clip(nrm_f @ s, 0, 1)[:, None]
-    sun_c = np.array(L["col"], np.float32) * L["i"]
-    h = s + view
+    sv = np.array(L["sun"], f32)
+    sv = np.array([sv[0] * math.cos(ang) + sv[2] * math.sin(ang), sv[1], -sv[0] * math.sin(ang) + sv[2] * math.cos(ang)], f32)
+    sv /= np.linalg.norm(sv)
+    lam = np.clip(nrm_f @ sv, 0, 1)[:, None]
+    sun_c = np.array(L["col"], f32) * f32(L["i"])
+    h = sv + view
     h /= np.maximum(np.linalg.norm(h, axis=1, keepdims=True), 1e-8)
     nh = np.clip((nrm_f * h).sum(1), 0, 1)
-    sp_exp = np.maximum(power * (0.4 + gloss), 1.0)
+    sp_exp = np.maximum(f32(power) * (f32(0.4) + gloss), f32(1.0))
     fr_stage = mat.stage(6)
     n_, k_ = 1.5, 0.0
     if fr_stage and o.stages_on.get(6, True) and fr_stage.texture and is_procedural(fr_stage.texture):
@@ -300,25 +374,25 @@ def shade(mesh, mat: Material, o: RenderOptions, resolve: TexResolver, P, N, T, 
         if pr.fresnel:
             n_, k_ = pr.fresnel
     ndv = np.clip((nrm_f * view).sum(1), 0, 1)
-    fres = _fresnel_curve(n_, k_, ndv)[:, None]
+    fres = _fresnel_curve(n_, k_, ndv).astype(f32)[:, None]
     hdri = getattr(o, "hdri", None)
     refl = 2 * (nrm_f * view).sum(1, keepdims=True) * nrm_f - view
-    envc = env_color(refl, L, hdri)
-    amb_env = env_color(nrm_f, L, hdri)
+    envc = env_color(refl, L, hdri).astype(f32)
+    amb_env = env_color(nrm_f, L, hdri).astype(f32)
 
     kd = albedo * detail * (1 - metal[:, None])
-    diffuse_term = kd * (amb[:3] * amb_env * L["amb"] * 2 + dif[:3] * lam * sun_c + forced[:3])
-    spec_col = (spc[:3] * (1 - metal[:, None]) + albedo * metal[:, None])
+    diffuse_term = kd * (amb[:3] * amb_env * f32(L["amb"] * 2) + dif[:3] * lam * sun_c + forced[:3])
+    spec_col = spc[:3] * (1 - metal[:, None]) + albedo * metal[:, None]
     spec_term = spec_col * (nh ** sp_exp)[:, None] * lam * sun_c * spec_i[:, None] * (sp_exp[:, None] + 8) / 25
-    refl_term = envc * spec_col * fres * (spec_i * (0.25 + 0.75 * gloss))[:, None] * spc[:3].mean()
+    refl_term = envc * spec_col * fres * (spec_i * (f32(0.25) + f32(0.75) * gloss))[:, None] * f32(spc[:3].mean())
     emis = emi[:3] + albedo * glow[:, None]
     lin = diffuse_term + spec_term + refl_term + emis
 
     v = o.view
-    if v == "albedo" or v == "checker":
+    if v in ("albedo", "checker"):
         lin = albedo
     elif v == "normal":
-        lin = ((nrm_f * np.array([1, 1, 1]) * 0.5 + 0.5)) ** 2.2
+        lin = (nrm_f * 0.5 + 0.5) ** 2.2
     elif v == "specular":
         lin = np.tile(spec_i[:, None], (1, 3))
     elif v == "metal":
@@ -329,8 +403,7 @@ def shade(mesh, mat: Material, o: RenderOptions, resolve: TexResolver, P, N, T, 
         lin = emis
     elif v == "detail":
         lin = detail * 0.5
-    out = np.clip(lin, 0, 1) ** (1 / 2.2)
-    return ys, xs, out
+    return geo.ys, geo.xs, np.clip(lin, 0, 1) ** f32(1 / 2.2)
 
 
 def background(W, H, L):
@@ -339,17 +412,32 @@ def background(W, H, L):
     return np.broadcast_to(top * (1 - yy) + hor * yy, (H, W, 3)).copy() ** (1 / 1.6)
 
 
-def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional[Mesh] = None) -> np.ndarray:
+class RenderCache:
+    """Кэш растеризации/геометрии между кадрами: при правке только материала пересчитывается шейдинг."""
+    def __init__(self):
+        self.key = None
+        self.data = None
+
+
+def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional[Mesh] = None,
+           cache: Optional[RenderCache] = None) -> np.ndarray:
     """-> RGBA uint8 (H,W,4)."""
-    mesh = mesh or SHAPES[o.shape]()
+    mesh = mesh or get_shape(o.shape)
     s = max(1, o.ssaa)
     W, H = o.width * s, o.height * s
-    P, N, T, w, sx, sy, dist = project_mesh(mesh, o, W, H)
-    tri, b0, b1 = rasterize(mesh, sx, sy, w, W, H)
+    key = (id(mesh), round(o.yaw, 3), round(o.pitch, 3), round(o.zoom, 4), tuple(round(x, 4) for x in o.pan), W, H)
+    if cache is not None and cache.key == key:
+        P, N, T, w, sx, sy, dist, geo = cache.data
+    else:
+        P, N, T, w, sx, sy, dist = project_mesh(mesh, o, W, H)
+        tri, b0, b1 = rasterize(mesh, sx, sy, w, W, H)
+        geo = prep_geometry(mesh, P, N, T, tri, b0, b1, dist) if (tri >= 0).any() else None
+        if cache is not None:
+            cache.key, cache.data = key, (P, N, T, w, sx, sy, dist, geo)
     L = LIGHTING.get(o.lighting, LIGHTING["Студия"])
-    img = background(W, H, L)
-    if (tri >= 0).any():
-        ys, xs, col = shade(mesh, mat, o, resolve, P, N, T, tri, b0, b1, dist, W, H)
+    img = background(W, H, L).astype(np.float32)
+    if geo is not None:
+        ys, xs, col = shade(geo, mat, o, resolve)
         img[ys, xs] = col
     if s > 1:
         img = img.reshape(o.height, s, o.width, s, 3).mean((1, 3))

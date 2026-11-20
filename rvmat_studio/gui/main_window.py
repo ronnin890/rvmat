@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox
 from .. import __version__
 from ..backend import ALL_STATES, Severity, State, kit_filename
 from ..core import export as ex
+from ..core.fbx import load_fbx
 from ..core.meshes import SHAPES, load_obj
 from ..core.presets import CATEGORIES, PresetManager
 from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
@@ -108,7 +109,7 @@ class MainWindow(QMainWindow):
         v.setContentsMargins(4, 4, 4, 2)
         v.setSpacing(3)
         r1, r2 = QHBoxLayout(), QHBoxLayout()
-        self.c_shape = QComboBox(); self.c_shape.addItems(list(SHAPES) + ["Свой OBJ"])
+        self.c_shape = QComboBox(); self.c_shape.addItems(list(SHAPES) + ["Своя модель"])
         self.c_light = QComboBox(); self.c_light.addItems(list(LIGHTING))
         self.c_view = QComboBox()
         for t, val in VIEWS:
@@ -124,7 +125,7 @@ class MainWindow(QMainWindow):
         for w_ in (QLabel("Модель"), self.c_shape, QLabel("Свет"), self.c_light, QLabel("Вид"), self.c_view, self.sp_tile, self.sl_light):
             r1.addWidget(w_)
         r1.addStretch()
-        b_obj = QPushButton("OBJ…"); b_obj.setToolTip("Импорт модели OBJ (FBX/P3D не поддерживаются)")
+        b_obj = QPushButton("Модель…"); b_obj.setToolTip("Импорт модели: OBJ или FBX (P3D — сначала конвертируйте в OBJ/FBX)")
         b_hdri = QPushButton("HDRI…"); b_hdri.setToolTip("Панорама окружения (PNG/JPG, equirectangular)")
         b_cam = QPushButton("⟲ Камера")
         b_shot = QPushButton("Снимок…")
@@ -485,13 +486,14 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, "Модель", self.settings.last_dir, "Модели (*.obj *.fbx *.p3d)")
         if not f:
             return
-        if not f.lower().endswith(".obj"):
-            QMessageBox.information(self, "Модель", "Поддерживается только OBJ. FBX/P3D конвертируйте в OBJ (для P3D — через инструменты DayZ).")
+        ext = Path(f).suffix.lower()
+        if ext not in (".obj", ".fbx"):
+            QMessageBox.information(self, "Модель", "Поддерживаются OBJ и FBX. P3D (формат BI) напрямую не читается — экспортируйте модель в FBX/OBJ.")
             return
         try:
-            self.preview.mesh = load_obj(f)
-            self.c_shape.setCurrentText("Свой OBJ")
-            self.preview.opts.shape = "Свой OBJ"
+            self.preview.mesh = load_fbx(f) if ext == ".fbx" else load_obj(f)
+            self.c_shape.setCurrentText("Своя модель")
+            self.preview.opts.shape = "Своя модель"
             self.preview.request()
             self.log(f"Загружена модель {Path(f).name}: {len(self.preview.mesh.f)} треуг.")
         except Exception as e:

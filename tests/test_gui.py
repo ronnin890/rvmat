@@ -289,3 +289,32 @@ def test_recovery_files_found_on_start(app, win):
 def Project_recovery():
     from rvmat_studio.core.project import Project
     return Project.recovery_files()
+
+
+def test_import_fbx_and_obj_via_window(app, win, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from tests.test_fbx import build_fbx
+    f = tmp_path / "q.fbx"; f.write_bytes(build_fbx())
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(f), ""))
+    win.import_obj()
+    assert win.c_shape.currentText() == "Своя модель" and len(win.preview.mesh.f) == 2
+    img = win.preview.render_sync()
+    assert img.shape[2] == 4
+    o = tmp_path / "t.obj"; o.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(o), ""))
+    win.import_obj()
+    assert len(win.preview.mesh.f) == 1
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(tmp_path / "x.p3d"), ""))
+    win.import_obj()
+    assert shown and "P3D" in shown[0]
+
+
+def test_preview_two_phase_quality(app, win):
+    p = win.preview
+    assert spin(app, lambda: p._img is not None)
+    p.request()
+    assert p._quality is False                    # сначала быстрый кадр
+    assert spin(app, lambda: p._quality is True, 3)   # затем качественный
+    assert spin(app, lambda: not p._busy, 10)

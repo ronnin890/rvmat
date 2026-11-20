@@ -9,7 +9,8 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QWidget
 
 from ..core.meshes import SHAPES, Mesh
-from ..core.render import RenderOptions, render, render_uv_layout
+from ..core.meshes import get_shape
+from ..core.render import RenderCache, RenderOptions, render, render_uv_layout
 from .widgets import qimage_from_rgba
 
 
@@ -57,6 +58,8 @@ class PreviewWidget(QWidget):
         self._timer = QTimer(self, singleShot=True, interval=25, timeout=self._kick)
         self._final_timer = QTimer(self, singleShot=True, interval=350, timeout=self._final)
         self._jobs = []
+        self._cache = RenderCache()
+        self._quality = False
         self._sig = _Signals(self)
         self._sig.done.connect(self._on_done)
         self.setMouseTracking(True)
@@ -69,12 +72,15 @@ class PreviewWidget(QWidget):
         self.request()
 
     def request(self, interactive=False):
+        """Сначала быстрый кадр (1×, при перетаскивании — половинное разрешение), через паузу — качественный (2×)."""
         self._interacting = interactive
+        self._quality = False
         self._timer.start()
         self._final_timer.start()
 
     def _final(self):
         self._interacting = False
+        self._quality = True
         self._kick()
 
     def _kick(self):
@@ -92,7 +98,8 @@ class PreviewWidget(QWidget):
         fast = self._interacting
         scale = 0.5 if fast else 1.0
         o.width, o.height = max(int(w * scale), 64), max(int(h * scale), 64)
-        o.ssaa = 1 if fast else 2
+        o.ssaa = 2 if (self._quality and not fast) else 1
+        cache = self._cache
         a, b, res, mesh, show_uv = self.mat_a, self.mat_b, self.resolver, self._mesh(), self.show_uv
         uv_bg = self.uv_bg
         side = min(o.width, o.height)
@@ -100,9 +107,9 @@ class PreviewWidget(QWidget):
         def work():
             if show_uv:
                 return render_uv_layout(mesh, 512, uv_bg)
-            ia = render(a, o, res, mesh)
+            ia = render(a, o, res, mesh, cache)
             if b is not None:
-                ib = render(b, o, res, mesh)
+                ib = render(b, o, res, mesh, cache)
                 return np.concatenate([ia, ib], axis=1)
             return ia
         job = _Job(self._gen, work, self._sig)
@@ -117,7 +124,7 @@ class PreviewWidget(QWidget):
         return o
 
     def _mesh(self):
-        return self.mesh if (self.mesh is not None and self.opts.shape == "Свой OBJ") else SHAPES.get(self.opts.shape, SHAPES["Сфера"])()
+        return self.mesh if (self.mesh is not None and self.opts.shape == "Своя модель") else get_shape(self.opts.shape)
 
     def _on_done(self, gen, res):
         self._busy = False
@@ -135,7 +142,7 @@ class PreviewWidget(QWidget):
         """Синхронный рендер (для тестов/скриншотов)."""
         o = self._opts_copy()
         o.width, o.height = max(self.width(), 64), max(self.height(), 64)
-        return render(self.mat_a, o, self.resolver, self._mesh())
+        return render(self.mat_a, o, self.resolver, self._mesh(), RenderCache())
 
     # --- события
     def paintEvent(self, _):

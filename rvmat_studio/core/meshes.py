@@ -182,7 +182,7 @@ def load_obj(path) -> Mesh:
             if k not in key:
                 key[k] = len(verts)
                 verts.append(V[idx(vi, len(V))])
-                uvs.append(VT[idx(ti, len(VT))] if ti and VT else [0, 0])
+                uvs.append([VT[idx(ti, len(VT))][0], 1 - VT[idx(ti, len(VT))][1]] if ti and VT else [0, 0])
                 norms.append(VN[idx(ni, len(VN))] if ni and VN else [0, 0, 0])
             ids.append(key[k])
         for i in range(1, len(ids) - 1):
@@ -197,3 +197,13 @@ def load_obj(path) -> Mesh:
 
 SHAPES = {"Сфера": sphere, "Куб": cube, "Цилиндр": cylinder, "Плоскость": plane, "Тор": torus,
           "Тестовая модель": capsule_test}
+
+
+_shape_cache: dict = {}
+
+
+def get_shape(name: str) -> Mesh:
+    """Модели строятся один раз (id меши служит ключом кэша рендера)."""
+    if name not in _shape_cache:
+        _shape_cache[name] = SHAPES.get(name, sphere)()
+    return _shape_cache[name]

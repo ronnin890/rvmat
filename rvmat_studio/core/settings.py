@@ -30,6 +30,7 @@ class Settings:
     window_state: str = ""        # base64 QMainWindow.saveState
     geometry: str = ""
     recent: list = field(default_factory=list)
+    renderer: str = "auto"       # auto | gl | cpu
     lighting: str = "Студия"
     last_dir: str = ""
 

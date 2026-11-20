@@ -102,6 +102,11 @@ class SettingsDialog(QDialog):
             row.addWidget(ed); row.addWidget(b)
             f.addRow(label, row)
             self.e[key] = ed
+        self.renderer = QComboBox()
+        for t, v in (("Авто (OpenGL, если доступен)", "auto"), ("Только OpenGL", "gl"), ("Только процессор (CPU)", "cpu")):
+            self.renderer.addItem(t, v)
+        self.renderer.setCurrentIndex(max(0, self.renderer.findData(s.renderer)))
+        f.addRow("Рендер предпросмотра (нужен перезапуск)", self.renderer)
         self.auto = QSpinBox(); self.auto.setRange(10, 3600); self.auto.setValue(s.autosave_seconds); self.auto.setSuffix(" с")
         f.addRow("Автосохранение", self.auto)
         find = QPushButton("Найти DayZ Tools автоматически"); find.clicked.connect(self._find)
@@ -129,6 +134,7 @@ class SettingsDialog(QDialog):
         for k, ed in self.e.items():
             setattr(self.s, k, ed.text().strip())
         self.s.autosave_seconds = self.auto.value()
+        self.s.renderer = self.renderer.currentData()
         super().accept()
 
 

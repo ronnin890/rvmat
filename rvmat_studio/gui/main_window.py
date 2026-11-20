@@ -21,7 +21,7 @@ from ..core.settings import Settings
 from ..core.textures import ThumbCache, convert_to_paa, to_game_path
 from .dialogs import BatchDialog, ExportDialog, SettingsDialog, TextureViewer
 from .library import PresetsTab, StatesTab, TexturesTab
-from .preview import PreviewWidget
+from .preview import GLPreviewWidget, PreviewWidget
 from .properties import PropertiesPanel
 
 VIEWS = [("Итог", "final"), ("Albedo / AS", "albedo"), ("Нормали", "normal"), ("Specular (SMDI-R)", "specular"),
@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
 
         # центральная область
-        self.preview = PreviewWidget()
+        self.preview = self._make_preview()
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
         b_hdri = QPushButton("HDRI…"); b_hdri.setToolTip("Панорама окружения (PNG/JPG, equirectangular)")
         b_cam = QPushButton("⟲ Камера")
         b_shot = QPushButton("Снимок…")
-        for b, f in ((b_obj, self.import_obj), (b_hdri, self.load_hdri), (b_cam, self.preview.reset_camera), (b_shot, self.save_snapshot)):
+        for b, f in ((b_obj, self.import_obj), (b_hdri, self.load_hdri), (b_cam, lambda: self.preview.reset_camera()), (b_shot, self.save_snapshot)):
             b.clicked.connect(f)
         for w_ in (self.k_wire, self.k_grid, self.k_uv, self.k_cmp, self.c_cmp):
             r2.addWidget(w_)
@@ -138,6 +138,39 @@ class MainWindow(QMainWindow):
             r2.addWidget(b)
         v.addLayout(r1); v.addLayout(r2)
         return box
+
+    def _make_preview(self):
+        """OpenGL, если доступен (и не отключён в настройках/переменной RVMAT_RENDERER), иначе CPU."""
+        import os
+        mode = os.environ.get("RVMAT_RENDERER") or self.settings.renderer
+        w = None
+        if mode in ("auto", "gl"):
+            try:
+                from ..core.gl_render import gl_available
+                if gl_available():
+                    w = GLPreviewWidget()
+                    w.gl_failed.connect(self._swap_to_cpu)
+            except Exception:
+                w = None
+        if w is None:
+            w = PreviewWidget()
+        w.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
+        return w
+
+    def _swap_to_cpu(self, reason=""):
+        old = self.preview
+        if old.backend == "cpu":
+            return
+        new = PreviewWidget()
+        new.opts, new.mesh, new.hdri, new.show_uv, new.uv_bg = old.opts, old.mesh, old.hdri, old.show_uv, old.uv_bg
+        new.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
+        lay = self.centralWidget().layout()
+        lay.replaceWidget(old, new)
+        QTimer.singleShot(0, old.deleteLater)
+        old.hide()
+        self.preview = new
+        self.log(f"OpenGL недоступен ({reason[:120]}), включён программный рендер")
+        self.refresh_preview()
 
     def _act(self, menu, text, fn, shortcut=None):
         a = QAction(text, self)
@@ -187,19 +220,17 @@ class MainWindow(QMainWindow):
 
     def _wire(self):
         self.proj.listeners.append(self.on_project_changed)
-        p = self.preview
-        self.c_shape.currentTextChanged.connect(lambda t: (setattr(p.opts, "shape", t), p.request()))
-        self.c_light.currentTextChanged.connect(lambda t: (setattr(p.opts, "lighting", t), p.request()))
-        self.c_view.currentIndexChanged.connect(lambda: (setattr(p.opts, "view", self.c_view.currentData()), p.request()))
-        self.sp_tile.valueChanged.connect(lambda x: (setattr(p.opts, "tiling", x), p.request()))
-        self.sl_light.valueChanged.connect(lambda x: (setattr(p.opts, "light_rot", x), p.request()))
-        self.k_wire.toggled.connect(lambda x: (setattr(p.opts, "wire", x), p.request()))
-        self.k_grid.toggled.connect(lambda x: (setattr(p.opts, "grid", x), p.request()))
-        self.k_uv.toggled.connect(lambda x: (setattr(p, "show_uv", x), p.request()))
+        self.c_shape.currentTextChanged.connect(lambda t: (setattr(self.preview.opts, "shape", t), self.preview.request()))
+        self.c_light.currentTextChanged.connect(lambda t: (setattr(self.preview.opts, "lighting", t), self.preview.request()))
+        self.c_view.currentIndexChanged.connect(lambda: (setattr(self.preview.opts, "view", self.c_view.currentData()), self.preview.request()))
+        self.sp_tile.valueChanged.connect(lambda x: (setattr(self.preview.opts, "tiling", x), self.preview.request()))
+        self.sl_light.valueChanged.connect(lambda x: (setattr(self.preview.opts, "light_rot", x), self.preview.request()))
+        self.k_wire.toggled.connect(lambda x: (setattr(self.preview.opts, "wire", x), self.preview.request()))
+        self.k_grid.toggled.connect(lambda x: (setattr(self.preview.opts, "grid", x), self.preview.request()))
+        self.k_uv.toggled.connect(lambda x: (setattr(self.preview, "show_uv", x), self.preview.request()))
         self.k_cmp.toggled.connect(lambda _: self.refresh_preview())
         self.c_cmp.currentIndexChanged.connect(lambda _: self.refresh_preview())
-        p.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
-        self.panel.stage_visibility.connect(lambda i, on: (p.opts.stages_on.__setitem__(i, on), p.request()))
+        self.panel.stage_visibility.connect(lambda i, on: (self.preview.opts.stages_on.__setitem__(i, on), self.preview.request()))
         self.panel.assign_requested.connect(self.browse_assign)
         self.panel.view_requested.connect(self.view_stage_texture)
         self.panel.target_changed.connect(lambda _: self.refresh_preview())

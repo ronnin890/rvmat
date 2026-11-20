@@ -21,8 +21,10 @@ def selftest() -> int:
     out = Path(tempfile.mkdtemp())
     assert len(ex.execute(ex.plan_kit(w.proj, out))) == 6, "экспорт комплекта"
     w.preview.shutdown()
+    from .preview import close_offscreen
+    close_offscreen()
     w.proj.dirty = False
-    print("SELFTEST OK")
+    print(f"SELFTEST OK (рендер: {w.preview.backend})")
     return 0
 
 
@@ -30,7 +32,12 @@ def main(argv=None) -> int:
     argv = list(argv or sys.argv)
     if "--selftest" in argv:
         return selftest()
+    from ..core.gl_render import surface_format
+    from PySide6.QtGui import QSurfaceFormat
+    QSurfaceFormat.setDefaultFormat(surface_format())
     app = QApplication(argv)
+    from .preview import close_offscreen
+    app.aboutToQuit.connect(close_offscreen)
     app.setStyle("Fusion")
     app.setStyleSheet(DARK)
     w = MainWindow()

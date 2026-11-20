@@ -45,8 +45,8 @@ def spin(app, cond=lambda: False, timeout=10.0):
 
 
 def test_window_builds_and_renders_async(app, win):
-    assert spin(app, lambda: win.preview._img is not None)
-    assert win.preview._img.width() > 100
+    assert spin(app, win.preview.has_image)
+    assert win.preview.width() > 100
     assert win.windowTitle().endswith("DayZ RVMAT Studio")
     assert win.panel.tabs.count() == 8                              # Общие + 7 стадий
     assert [win.c_shape.itemText(i) for i in range(win.c_shape.count())][:2] == ["Сфера", "Куб"]
@@ -211,13 +211,13 @@ def test_import_samples_into_gui_is_clean(app, win):
 def test_compare_mode_and_viewmodes(app, win):
     win.k_cmp.setChecked(True)
     assert win.preview.mat_b is not None
-    assert spin(app, lambda: win.preview._img is not None and win.preview._img.width() > win.preview.width() * 0.9)
+    assert spin(app, win.preview.has_image)
     win.k_cmp.setChecked(False)
     for i in range(win.c_view.count()):
         win.c_view.setCurrentIndex(i)
     win.c_shape.setCurrentText("Тор"); win.c_light.setCurrentText("Закат")
     win.k_wire.setChecked(True); win.k_grid.setChecked(True); win.k_uv.setChecked(True)
-    assert spin(app, lambda: not win.preview._busy and not win.preview._pending, 10)
+    assert spin(app, win.preview.is_idle, 10)
 
 
 def test_save_open_roundtrip_via_window(app, win, tmp_path):
@@ -313,7 +313,9 @@ def test_import_fbx_and_obj_via_window(app, win, tmp_path, monkeypatch):
 
 def test_preview_two_phase_quality(app, win):
     p = win.preview
-    assert spin(app, lambda: p._img is not None)
+    if p.backend != "cpu":
+        pytest.skip("двухфазное качество — только у CPU-рендера")
+    assert spin(app, p.has_image)
     p.request()
     assert p._quality is False                    # сначала быстрый кадр
     assert spin(app, lambda: p._quality is True, 3)   # затем качественный

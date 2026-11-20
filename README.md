@@ -29,6 +29,9 @@ CLI без GUI: `python -m rvmat_studio kit base.rvmat myhelmet out/` · `python
 
 Горячие клавиши: Ctrl+N/O/S/Shift+S, Ctrl+I импорт RVMAT, Ctrl+E экспорт комплекта, Ctrl+Z/Y, F2 переименовать, F5 диагностика, Ctrl+F поиск текстур.
 
+## Workbench
+«Инструменты → Проверить в Workbench» запускает `workbenchApp.exe -project=<dayz.gproj>` с рабочей папкой Workbench. Файл `dayz.gproj` ищется: указанный в Настройках → корень проекта/P: (и их папки `Workbench`) → DayZ Tools. Если не найден или P: не смонтирован — выводится понятное сообщение. Материал в Workbench нужно открыть вручную в Resource Browser (путь показывается). Флаг `-project` взят из руководств сообщества, **на реальных DayZ Tools не проверялся**.
+
 ## Честные ограничения
 - Предпросмотр — **приближение** шейдера Super, не движок Enfusion (Справка → «Отличия предпросмотра от игры»). Трактовка каналов SMDI (R spec, G metal, B gloss, A glow) — оценочная.
 - Stage3 для обычного (base) материала **не подтверждён образцами** (их не было); взят как у decorative, помечен `I300`.

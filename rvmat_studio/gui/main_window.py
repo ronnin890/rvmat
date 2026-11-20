@@ -499,13 +499,25 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "PAA", f"Готово: {ok}, ошибок: {bad}")
 
     def open_workbench(self):
-        if not self.proj.export_dir:
-            QMessageBox.information(self, "Workbench", "Сначала экспортируйте комплект.")
-            return
+        st = self.settings
+        root = self.proj.project_root or st.project_root
         try:
-            ex.check_in_workbench(self.settings.workbench, Path(self.proj.export_dir) / kit_filename(self.proj.name, self.panel.view_state()))
-        except Exception as e:
+            _, gp = ex.check_in_workbench(st.workbench, st.gproj, st.p_drive, root, st.dayz_tools)
+        except ex.WorkbenchError as e:
             QMessageBox.warning(self, "Workbench", str(e))
+            return
+        except OSError as e:
+            QMessageBox.warning(self, "Workbench", f"Не удалось запустить: {e}")
+            return
+        name = kit_filename(self.proj.name, self.panel.view_state())
+        hint = name
+        if self.proj.export_dir and root:
+            try:
+                hint = str((Path(self.proj.export_dir) / name).resolve().relative_to(Path(root).resolve())).replace("/", "\\")
+            except ValueError:
+                pass
+        self.log(f"Workbench запущен с проектом {gp}")
+        QMessageBox.information(self, "Workbench", f"Workbench запущен с проектом:\n{gp}\n\nОткройте материал в Resource Browser по пути:\n{hint}\n(сначала экспортируйте комплект внутрь P:/проекта).")
 
     # ------------------------------------------------------------ пресеты
     def apply_preset(self, pid: str):

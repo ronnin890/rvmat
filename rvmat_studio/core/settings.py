@@ -24,6 +24,7 @@ class Settings:
     dayz_tools: str = ""
     workbench: str = ""
     image_to_paa: str = ""
+    gproj: str = ""               # путь к dayz.gproj для Workbench (пусто = искать автоматически)
     p_drive: str = "P:\\"
     project_root: str = ""
     autosave_seconds: int = 60

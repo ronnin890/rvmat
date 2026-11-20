@@ -357,3 +357,41 @@ def test_uv_params_roundtrip():
     assert p["tile_u"] == pytest.approx(4) and p["tile_v"] == pytest.approx(2)
     st.set_uv_params(1, 1, 0, 0, 90)
     assert st.uv_params()["rotation"] == pytest.approx(90)
+
+
+# ------------------------------------------------------------------ Workbench
+def test_find_gproj_priority_and_search(tmp_path):
+    from rvmat_studio.core.export import find_gproj
+    p = tmp_path / "P"; (p / "MyMod" / "Workbench").mkdir(parents=True)
+    g1 = p / "MyMod" / "Workbench" / "dayz.gproj"; g1.write_text("x")
+    tools = tmp_path / "Tools"; (tools / "Bin" / "Workbench").mkdir(parents=True)
+    g2 = tools / "Bin" / "Workbench" / "dayz.gproj"; g2.write_text("x")
+    explicit = tmp_path / "my.gproj"; explicit.write_text("x")
+    assert find_gproj(str(explicit), str(p), "", str(tools)) == [explicit, g1, g2]
+    assert find_gproj("", str(p), "", "") == [g1]
+    (p / "dayz.gproj").write_text("x")
+    assert find_gproj("", str(p), "", "")[0] == p / "dayz.gproj"          # корень P: важнее вложенных
+    assert find_gproj("", str(tmp_path / "none"), "", "") == []
+
+
+def test_workbench_launch_uses_project_and_cwd(tmp_path, monkeypatch):
+    import subprocess
+    from rvmat_studio.core import export as ex
+    wb = tmp_path / "Workbench" / "workbenchApp.exe"; wb.parent.mkdir(); wb.write_text("")
+    g = tmp_path / "P" / "dayz.gproj"; g.parent.mkdir(); g.write_text("")
+    calls = {}
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: calls.update(cmd=cmd, kw=kw) or object())
+    _, used = ex.check_in_workbench(str(wb), "", str(tmp_path / "P"), "", "")
+    assert used == g and calls["cmd"] == [str(wb), f"-project={g}"]
+    assert calls["kw"]["cwd"] == str(wb.parent)                           # рабочая папка = папка Workbench
+
+
+def test_workbench_errors_are_explained(tmp_path):
+    from rvmat_studio.core import export as ex
+    wb = tmp_path / "workbenchApp.exe"; wb.write_text("")
+    with pytest.raises(ex.WorkbenchError, match="workbenchApp"):
+        ex.check_in_workbench("", "", "", "", "")
+    with pytest.raises(ex.WorkbenchError, match="Смонтируйте"):
+        ex.check_in_workbench(str(wb), "", str(tmp_path / "nodrive"), "", "")
+    with pytest.raises(ex.WorkbenchError, match="dayz.gproj"):
+        ex.check_in_workbench(str(wb), "", str(tmp_path), "", "")

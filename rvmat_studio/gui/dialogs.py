@@ -93,7 +93,7 @@ class SettingsDialog(QDialog):
         f = QFormLayout(self)
         self.e = {}
         for key, label in (("dayz_tools", "DayZ Tools (папка)"), ("workbench", "Workbench (exe)"),
-                           ("image_to_paa", "ImageToPAA (exe)"), ("p_drive", "P: Drive"), ("project_root", "Корень проекта по умолчанию")):
+                           ("image_to_paa", "ImageToPAA (exe)"), ("gproj", "Файл проекта dayz.gproj (Workbench)"), ("p_drive", "P: Drive"), ("project_root", "Корень проекта по умолчанию")):
             row = QHBoxLayout()
             ed = QLineEdit(getattr(s, key))
             b = QPushButton("…")
@@ -116,7 +116,7 @@ class SettingsDialog(QDialog):
         f.addRow(bb)
 
     def _browse(self, ed, key):
-        if key in ("workbench", "image_to_paa"):
+        if key in ("workbench", "image_to_paa", "gproj"):
             p, _ = QFileDialog.getOpenFileName(self, "Файл", ed.text())
         else:
             p = QFileDialog.getExistingDirectory(self, "Папка", ed.text())

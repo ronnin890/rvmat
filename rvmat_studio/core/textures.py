@@ -17,9 +17,11 @@ GAME_EXT = {".paa", ".pac"}
 ALL_EXT = SOURCE_EXT | GAME_EXT
 
 # суффикс -> номер стадии RVMAT (Super)
-SUFFIX_STAGE = {"nohq": 1, "no": 1, "nopx": 1, "as": 4, "smdi": 5, "co": 4, "ca": 4}
+SUFFIX_STAGE = {"nohq": 1, "no": 1, "nopx": 1, "as": 4, "smdi": 5}
+BASE_SUFFIXES = {"co", "ca"}      # базовый цвет — задаётся на грани модели (P3D), не стадия RVMAT
+BASE_STAGE = 0                    # псевдо-стадия «Base Color» в авто-сопоставлении
 STAGE_ROLE = {1: "Normal (nohq)", 2: "Detail (dt)", 3: "Material Condition (mc)",
-              4: "AS (ambient shadow / color)", 5: "SMDI", 6: "Fresnel", 7: "Environment"}
+              4: "AS — Ambient Shadow (фоновое затенение)", 5: "SMDI", 6: "Fresnel", 7: "Environment"}
 _SUFFIX_RE = re.compile(r"^(?P<base>.+?)_(?P<suf>nohq|nopx|no|as|smdi|co|ca|dt|mc|sm|mca)$", re.I)
 
 
@@ -34,6 +36,8 @@ def guess_stage(path) -> Optional[int]:
         return 2
     if suf == "mc":
         return 3
+    if suf in BASE_SUFFIXES:
+        return BASE_STAGE
     return SUFFIX_STAGE.get(suf) if suf else None
 
 
@@ -151,7 +155,9 @@ def scan_folder(folder, recursive=True) -> list[Path]:
 
 
 def auto_match(files: list[Path]) -> dict[str, dict[int, Path]]:
-    """Группировка по общему имени: {base: {stage: path}} (по _nohq/_as/_smdi/_dt/_mc/_co)."""
+    """Группировка по общему имени: {base: {stage: path}}.
+    stage 1/2/3/4/5 — стадии RVMAT (_nohq/_dt/_mc/_as/_smdi); stage 0 — Base Color (_co/_ca),
+    который в RVMAT не записывается (используется только в предпросмотре)."""
     groups: dict[str, dict[int, Path]] = {}
     for f in files:
         base, suf = split_suffix(f.stem)
@@ -159,8 +165,7 @@ def auto_match(files: list[Path]) -> dict[str, dict[int, Path]]:
         if suf is None or st is None:
             continue
         g = groups.setdefault(base.lower(), {})
-        # _co и _as оба претендуют на Stage4: _as предпочтительнее
-        if st in g and suf != "as":
+        if st == BASE_STAGE and suf == "ca" and st in g:      # _co предпочтительнее _ca
             continue
         g[st] = f
     return groups

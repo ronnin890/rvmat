@@ -24,7 +24,7 @@ from .library import PresetsTab, StatesTab, TexturesTab
 from .preview import GLPreviewWidget, PreviewWidget
 from .properties import PropertiesPanel
 
-VIEWS = [("Итог", "final"), ("Albedo / AS", "albedo"), ("Нормали", "normal"), ("Specular (SMDI-R)", "specular"),
+VIEWS = [("Итог", "final"), ("Base Color (_co)", "albedo"), ("AS: затенение ambient", "ao"), ("Нормали", "normal"), ("Specular (SMDI-R)", "specular"),
          ("Metal (SMDI-G)", "metal"), ("Gloss (SMDI-B)", "gloss"), ("Свечение (SMDI-A)", "emissive"),
          ("Detail", "detail"), ("UV-шашечки", "checker")]
 SEV_TEXT = {Severity.ERROR: "Критическая", Severity.WARNING: "Предупреждение", Severity.INFO: "Инфо"}
@@ -232,6 +232,7 @@ class MainWindow(QMainWindow):
         self.c_cmp.currentIndexChanged.connect(lambda _: self.refresh_preview())
         self.panel.stage_visibility.connect(lambda i, on: (self.preview.opts.stages_on.__setitem__(i, on), self.preview.request()))
         self.panel.assign_requested.connect(self.browse_assign)
+        self.panel.base_requested.connect(self.browse_base)
         self.panel.view_requested.connect(self.view_stage_texture)
         self.panel.target_changed.connect(lambda _: self.refresh_preview())
         self.tab_tex.assign.connect(lambda st, path: self.assign_texture(st, Path(path)))
@@ -270,7 +271,8 @@ class MainWindow(QMainWindow):
         a = self.proj.effective(st)
         b = self.proj.effective(State(self.c_cmp.currentData())) if self.k_cmp.isChecked() else None
         s4 = a.stage(4)
-        self.preview.uv_bg = self.resolver(s4.texture) if s4 and s4.texture else None
+        self.preview.uv_bg = self.resolver(self.proj.base_color) if self.proj.base_color else (self.resolver(s4.texture) if s4 and s4.texture else None)
+        self.preview.opts.base_color = self.resolver(self.proj.base_color) if self.proj.base_color else None
         self.preview.set_materials(a, b, self.resolver)
 
     def run_validation(self):
@@ -429,6 +431,10 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ текстуры
     def assign_texture(self, stage: int, phys: Path):
+        if stage == 0:                                # Base Color: только предпросмотр, RVMAT не меняется
+            self.proj.set_base_color(str(phys))
+            self.log(f"Base Color (превью) ← {phys.name}; в RVMAT базовый цвет не записывается")
+            return
         root = Path(self.proj.project_root) if self.proj.project_root else None
         game = None
         if root:
@@ -452,6 +458,11 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, f"Текстура для Stage{stage}", self.settings.last_dir, "Текстуры (*.paa *.png *.tga *.jpg *.jpeg *.tif *.tiff *.bmp)")
         if f:
             self.assign_texture(stage, Path(f))
+
+    def browse_base(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Base Color (_co) для предпросмотра", self.settings.last_dir, "Текстуры (*.paa *.png *.tga *.jpg *.jpeg *.tif *.tiff *.bmp)")
+        if f:
+            self.proj.set_base_color(f)
 
     def view_stage_texture(self, stage: int):
         s = self.panel.view_material().stage(stage)

@@ -74,15 +74,17 @@ def test_read_paa_errors():
 def test_suffixes_and_stage_guess():
     assert split_suffix("eyemask_black_nohq") == ("eyemask_black", "nohq")
     assert guess_stage("x_as.paa") == 4 and guess_stage("x_smdi.png") == 5 and guess_stage("x_nohq.tga") == 1
+    assert guess_stage("x_co.paa") == 0 and guess_stage("x_ca.paa") == 0   # базовый цвет — не стадия RVMAT
     assert guess_stage("plain.png") is None
 
 
 def test_auto_match_and_scan(tmp_path):
-    for n in ("helm_nohq", "helm_as", "helm_smdi", "helm_co", "other_as", "readme"):
+    for n in ("helm_nohq", "helm_as", "helm_smdi", "helm_co", "helm_ca", "other_as", "readme"):
         Image.new("RGBA", (8, 8)).save(tmp_path / f"{n}.png")
     files = scan_folder(tmp_path)
     g = auto_match(files)
-    assert set(g["helm"]) == {1, 4, 5} and g["helm"][4].name == "helm_as.png"   # _as важнее _co
+    assert set(g["helm"]) == {0, 1, 4, 5}                       # 0 = Base Color (_co): не стадия RVMAT
+    assert g["helm"][4].name == "helm_as.png" and g["helm"][0].name == "helm_co.png"
     assert set(g["other"]) == {4}
 
 
@@ -210,6 +212,18 @@ def test_import_all_four_samples_and_validate_clean():
     assert not [i for i in p.validate() if i.severity >= Severity.WARNING]
 
 
+def test_base_color_is_project_preview_state_not_rvmat(tmp_path):
+    p = Project("t")
+    before = {k: m.to_text() for k, m in p.kit().items()}
+    p.set_base_color("/x/helm_co.png")
+    assert p.base_color == "/x/helm_co.png" and "/x/helm_co.png" in p.textures
+    assert {k: m.to_text() for k, m in p.kit().items()} == before         # RVMAT не затронуты
+    f = tmp_path / "b.rvproj"; p.save(f)
+    assert Project.load(f).base_color == "/x/helm_co.png"
+    p.undo()
+    assert p.base_color == ""
+
+
 def test_copy_stage():
     p = Project("t")
     p.set_value(State.DAMAGE.value, "Stage1.texture", "dz\\q.paa")
@@ -269,26 +283,47 @@ def test_render_all_shapes(shape):
     assert img[..., :3].std() > 3                      # не пусто, есть форма и шейдинг
 
 
-def test_render_uses_textures_and_stage_toggle(tmp_path):
-    root = tmp_path
-    (root / "dz").mkdir()
-    red = np.zeros((16, 16, 4), np.uint8); red[..., 0] = 230; red[..., 3] = 255
-    Image.fromarray(red).save(root / "dz" / "r_as.png")             # .png вместо .paa допускается
+def _solid(rgba):
+    return np.tile(np.array(rgba, np.float32) / 255, (16, 16, 1))
+
+
+def test_base_color_comes_from_model_not_rvmat():
     m = super_template()
-    m.stage(4).texture = "dz\\R_AS.paa"                              # регистр не важен
-    res = make_resolver(root)
-    on = render(m, RenderOptions(width=160, height=160, view="albedo"), res)
-    o = RenderOptions(width=160, height=160, view="albedo"); o.stages_on[4] = False
-    off = render(m, o, res)
-    c = on[80, 80, :3]
-    assert c[0] > 150 and c[1] < 60
-    assert abs(int(off[80, 80, 0]) - int(off[80, 80, 2])) < 5       # серый без AS
-    assert m.stage(4).texture == "dz\\R_AS.paa"                       # RVMAT не изменён
+    res = make_resolver(None)
+    before = m.to_text()
+    o = RenderOptions(width=160, height=160, view="albedo", base_color=_solid([230, 20, 20, 255]))
+    img = render(m, o, res)
+    assert img[80, 80, 0] > 150 and img[80, 80, 1] < 60
+    grey = render(m, RenderOptions(width=160, height=160, view="albedo"), res)
+    assert abs(int(grey[80, 80, 0]) - int(grey[80, 80, 2])) < 5          # без Base Color — нейтральный серый
+    assert m.to_text() == before                                          # RVMAT не изменился
+
+
+def test_as_is_ambient_shadow_not_color(tmp_path):
+    (tmp_path / "dz").mkdir()
+    Image.fromarray(np.tile(np.array([40, 200, 200, 255], np.uint8), (16, 16, 1))).save(tmp_path / "dz" / "x_as.png")
+    m = super_template()
+    res = make_resolver(tmp_path)
+    base = _solid([200, 120, 40, 255])
+    o = RenderOptions(width=160, height=160, view="albedo", base_color=base)
+    without = render(m, o, res)
+    m.stage(4).texture = "dz\\x_as.paa"
+    with_as = render(m, o, res)
+    assert (without == with_as).all()                                     # _as не меняет базовый цвет
+    ao = render(m, RenderOptions(width=160, height=160, view="ao"), res)
+    assert 100 < ao[80, 80, 0] < 120 and abs(int(ao[80, 80, 0]) - int(ao[80, 80, 1])) < 3     # AO = канал R: 40/255 → гамма-вывод ≈109
+    fin_as = render(m, RenderOptions(width=160, height=160, base_color=base), res).astype(int)
+    m.stage(4).texture = ""
+    fin_no = render(m, RenderOptions(width=160, height=160, base_color=base), res).astype(int)
+    assert fin_as[..., :3].mean() < fin_no[..., :3].mean()                # затенение темнее
+    o_off = RenderOptions(width=160, height=160, view="ao"); m.stage(4).texture = "dz\\x_as.paa"; o_off.stages_on[4] = False
+    assert render(m, o_off, res)[80, 80, 0] > 240                         # стадия отключена в превью → ao = 1
+    assert m.stage(4).texture == "dz\\x_as.paa"                           # RVMAT не изменён
 
 
 def test_render_views_and_uv():
     m = super_template()
-    for v in ("final", "albedo", "normal", "specular", "metal", "gloss", "emissive", "detail", "checker"):
+    for v in ("final", "albedo", "ao", "normal", "specular", "metal", "gloss", "emissive", "detail", "checker"):
         assert render(m, RenderOptions(width=96, height=96, view=v), make_resolver(None)).shape == (96, 96, 4)
     uv = render_uv_layout(SHAPES["Сфера"](), 128)
     assert uv.shape == (128, 128, 4)

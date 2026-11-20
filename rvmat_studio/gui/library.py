@@ -30,7 +30,7 @@ class TexturesTab(QWidget):
         row = QHBoxLayout()
         b1, b2, b3 = QPushButton("+ Файлы"), QPushButton("+ Папка"), QPushButton("Авто-назначение")
         b1.clicked.connect(self.add_files); b2.clicked.connect(self.add_folder); b3.clicked.connect(self.auto_assign)
-        b3.setToolTip("Сопоставить по общему имени и суффиксам _nohq/_as/_smdi/_co")
+        b3.setToolTip("Сопоставить по общему имени: _nohq/_as/_smdi → стадии RVMAT, _co → Base Color (превью)")
         for b in (b1, b2, b3):
             row.addWidget(b)
         v.addLayout(row)
@@ -83,7 +83,7 @@ class TexturesTab(QWidget):
             it = QListWidgetItem(p.name)
             it.setData(Qt.UserRole, s)
             st = guess_stage(p)
-            it.setToolTip(f"{s}\nСтадия по имени: {st or '—'}")
+            it.setToolTip(f"{s}\n" + ("Base Color (_co): не стадия RVMAT" if st == 0 else f"Стадия по имени: {st or '—'}"))
             arr = self.thumbs.get(p)
             if arr is not None:
                 rgba = np.dstack([arr[..., :3], np.full(arr.shape[:2], 255, np.uint8)])
@@ -105,9 +105,9 @@ class TexturesTab(QWidget):
             return
         path = it.data(Qt.UserRole)
         m = QMenu(self)
+        m.addAction("Назначить как Base Color (_co) — только превью", lambda: self.assign.emit(0, path))
+        m.addSeparator()
         for i in range(1, 8):
-            if i in (2, 3, 6, 7) and False:
-                continue
             m.addAction(f"Назначить на Stage{i} — {STAGE_ROLE[i]}", lambda i=i: self.assign.emit(i, path))
         m.addSeparator()
         m.addAction("Открыть просмотр…", lambda: self.open_viewer.emit(path))

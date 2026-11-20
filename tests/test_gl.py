@@ -24,6 +24,17 @@ def gl():
     g.close()
 
 
+def make_base(N=128):
+    """Base Color (_co) — приходит с модели, в RVMAT его нет."""
+    y, x = np.mgrid[0:N, 0:N] / N
+    st = np.sin(x * 40) > 0
+    a = np.zeros((N, N, 4), np.float32); a[..., 0] = np.where(st, 0.86, 0.35); a[..., 1] = np.where(st, 0.47, 0.24); a[..., 2] = 0.16; a[..., 3] = 1
+    return a
+
+
+BASE = make_base()
+
+
 @pytest.fixture
 def textured(tmp_path):
     d = tmp_path / "dz" / "t"; d.mkdir(parents=True)
@@ -54,10 +65,10 @@ def test_gl_draws_every_shape(gl, shape):
     assert (img[80, 80, :3] != img[2, 2, :3]).any()          # объект перекрывает фон в центре
 
 
-@pytest.mark.parametrize("view", ["final", "albedo", "normal", "specular", "metal", "gloss", "emissive", "detail", "checker"])
+@pytest.mark.parametrize("view", ["final", "albedo", "ao", "normal", "specular", "metal", "gloss", "emissive", "detail", "checker"])
 def test_gl_matches_cpu_renderer(gl, textured, view):
     m, res = textured
-    o = RenderOptions(shape="Сфера", width=192, height=192, view=view, tiling=2)
+    o = RenderOptions(shape="Сфера", width=192, height=192, view=view, tiling=2, base_color=BASE)
     a, b = gl.render(m, o, res, samples=0), render(m, o, res)
     assert mad(a, b) < 6.0, f"{view}: среднее расхождение {mad(a, b):.2f}"
 
@@ -65,7 +76,7 @@ def test_gl_matches_cpu_renderer(gl, textured, view):
 def test_gl_matches_cpu_on_other_shapes_and_lighting(gl, textured):
     m, res = textured
     for shape, light in (("Тор", "Закат"), ("Куб", "Ночь"), ("Цилиндр", "Пасмурно"), ("Плоскость", "Дневной свет")):
-        o = RenderOptions(shape=shape, width=160, height=160, lighting=light, yaw=40, pitch=-25)
+        o = RenderOptions(shape=shape, width=160, height=160, lighting=light, yaw=40, pitch=-25, base_color=BASE)
         assert mad(gl.render(m, o, res, samples=0), render(m, o, res)) < 8.0, (shape, light)
 
 
@@ -78,26 +89,33 @@ def test_gl_respects_material_params(gl):
     assert mad(a, b) > 0.5 and mad(a, c) > 0.5
 
 
-def test_gl_stage_toggle_and_missing_texture(gl, textured):
+def test_gl_as_is_ambient_shadow_and_base_color_separate(gl, textured):
     m, res = textured
-    o = RenderOptions(width=128, height=128, view="albedo")
+    o = RenderOptions(width=128, height=128, view="ao")
     on = gl.render(m, o, res, samples=0)
     o.stages_on[4] = False
     off = gl.render(m, o, res, samples=0)
-    assert on[64, 64, 0] > 120 and abs(int(off[64, 64, 0]) - int(off[64, 64, 2])) < 6
-    m.stage(4).texture = "dz\\nope\\missing.paa"                    # нет файла — серый, без падения
-    assert gl.render(m, RenderOptions(width=64, height=64, view="albedo"), res).shape == (64, 64, 4)
+    assert off[64, 64, 0] > 240 and on[64, 64, 0] < 240                  # AS → затенение; выключена → ao = 1
+    # базовый цвет не зависит от Stage4
+    alb = RenderOptions(width=128, height=128, view="albedo", base_color=BASE)
+    a1 = gl.render(m, alb, res, samples=0)
+    alb.stages_on[4] = False
+    assert mad(a1, gl.render(m, alb, res, samples=0)) < 0.01
+    assert a1[64, 64, 0] > 80                                             # цвет из BASE, а не серый
+    m.stage(4).texture = "dz\\nope\\missing.paa"                          # нет файла — без падения
+    assert gl.render(m, RenderOptions(width=64, height=64, view="ao"), res).shape == (64, 64, 4)
 
 
 def test_gl_camera_wire_hdri_obj(gl, tmp_path, textured):
     m, r = textured                                   # у однотонной сферы поворот по yaw незаметен
-    base = gl.render(m, RenderOptions(width=128, height=128), r)
-    assert mad(base, gl.render(m, RenderOptions(width=128, height=128, yaw=120), r)) > 0.3
-    assert mad(base, gl.render(m, RenderOptions(width=128, height=128, zoom=2.0), r)) > 1
-    assert mad(base, gl.render(m, RenderOptions(width=128, height=128, wire=True), r)) > 0.3
-    assert mad(base, gl.render(m, RenderOptions(width=128, height=128, grid=True), r)) > 0.2
+    kw = dict(width=128, height=128, base_color=BASE)
+    base = gl.render(m, RenderOptions(**kw), r)
+    assert mad(base, gl.render(m, RenderOptions(yaw=120, **kw), r)) > 0.3
+    assert mad(base, gl.render(m, RenderOptions(zoom=2.0, **kw), r)) > 1
+    assert mad(base, gl.render(m, RenderOptions(wire=True, **kw), r)) > 0.3
+    assert mad(base, gl.render(m, RenderOptions(grid=True, **kw), r)) > 0.2
     hd = np.zeros((16, 32, 3), np.float32); hd[..., 0] = 0.9
-    assert mad(base, gl.render(m, RenderOptions(width=128, height=128), r, hdri=hd)) > 2
+    assert mad(base, gl.render(m, RenderOptions(**kw), r, hdri=hd)) > 2
     f = tmp_path / "t.obj"; f.write_text("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 2/2 3/3 4/4\n")
     assert gl.render(m, RenderOptions(width=96, height=96), r, load_obj(f)).std() > 2
 

@@ -1,7 +1,8 @@
 """Программный (numpy) предпросмотр материала.
 
 ВАЖНО: это приближение шейдера DayZ "Super", а не сам движок Enfusion.
-Интерпретация каналов (приближение): AS.rgb — цвет; nohq.rg — XY нормали;
+Интерпретация каналов (приближение): базовый цвет (_co) берётся НЕ из RVMAT, а из текстуры грани модели
+(в превью задаётся отдельно); Stage4 (_as) — Ambient Shadow, затеняет только рассеянный свет (используется канал R); nohq.rg — XY нормали;
 SMDI: R — specular, G — metal, B — gloss, A — свечение; DT — множитель детали (×2);
 Fresnel — по параметрам fresnel(n,k); окружение — процедурное небо или пользовательский HDRI/панорама.
 См. DIFFERENCES — список известных отличий от игры.
@@ -26,6 +27,8 @@ DIFFERENCES = [
     "Карты MC (damage/destruct) игры не применяются: показывается только основной материал.",
     "Окружение (Stage7) заменено процедурным небом/панорамой; кубическая env-карта игры не используется.",
     "Интерпретация SMDI (R=specular, G=metal, B=gloss, A=glow) — оценочная.",
+    "Base Color (_co) в RVMAT не хранится (приходит с текстуры грани модели) — в превью задаётся отдельно.",
+    "AS (_as) трактуется как Ambient Shadow по каналу R и ослабляет только рассеянный свет и отражения.",
     "Нет теней, SSAO, пост-обработки и HDR-экспозиции игры.",
 ]
 
@@ -50,11 +53,13 @@ class RenderOptions:
     tiling: float = 1.0
     lighting: str = "Студия"
     light_rot: float = 0.0
-    view: str = "final"      # final|albedo|normal|specular|metal|gloss|emissive|detail|checker
+    view: str = "final"      # final|albedo(base color)|ao|normal|specular|metal|gloss|emissive|detail|checker
     stages_on: dict = field(default_factory=lambda: {i: True for i in range(1, 8)})
     wire: bool = False
     grid: bool = False
     ssaa: int = 1
+    base_color: object = None   # RGBA float32 [0..1]: _co с текстуры грани модели (в RVMAT его НЕТ)
+    hdri: object = None
 
 
 TexResolver = Callable[[str], Optional[np.ndarray]]   # игровой путь -> RGBA float32 [0..1] или None
@@ -331,8 +336,16 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     amb, dif, forced, emi, spc = col("ambient", [1] * 4), col("diffuse", [1] * 4), col("forcedDiffuse", [0, 0, 0, 1]), col("emmisive", [0] * 4), col("specular", [0] * 4)
     power = float(mat.get("specularPower") or 10)
 
-    albedo = get(4, lin=True)
-    albedo = albedo[:, :3] if albedo is not None else np.full((n, 3), 0.45, f32)
+    albedo = np.full((n, 3), 0.45, f32)
+    if o.base_color is not None:                      # _co из P3D/модели; UV модели без uvTransform
+        bk = ("base", id(o.base_color), o.tiling)
+        r = geo.samples.get(bk)
+        if r is None:
+            lin = sample(o.base_color, geo.uv * f32(o.tiling))[:, :3].astype(f32) ** f32(2.2)
+            r = geo.samples[bk] = (lin, o.base_color)
+        albedo = r[0]
+    asm = get(4)                                      # Ambient Shadow: ослабляет ambient, не солнце
+    ao = np.clip(asm[:, 0:1], 0, 1) if asm is not None else np.ones((n, 1), f32)
     if o.view == "checker":
         albedo = _checker(stage_uv(1))[:, :3] ** f32(2.2)
     s2 = mat.stage(2)
@@ -381,16 +394,18 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     amb_env = env_color(nrm_f, L, hdri).astype(f32)
 
     kd = albedo * detail * (1 - metal[:, None])
-    diffuse_term = kd * (amb[:3] * amb_env * f32(L["amb"] * 2) + dif[:3] * lam * sun_c + forced[:3])
+    diffuse_term = kd * (amb[:3] * amb_env * f32(L["amb"] * 2) * ao + dif[:3] * lam * sun_c + forced[:3])
     spec_col = spc[:3] * (1 - metal[:, None]) + albedo * metal[:, None]
     spec_term = spec_col * (nh ** sp_exp)[:, None] * lam * sun_c * spec_i[:, None] * (sp_exp[:, None] + 8) / 25
-    refl_term = envc * spec_col * fres * (spec_i * (f32(0.25) + f32(0.75) * gloss))[:, None] * f32(spc[:3].mean())
+    refl_term = ao * envc * spec_col * fres * (spec_i * (f32(0.25) + f32(0.75) * gloss))[:, None] * f32(spc[:3].mean())
     emis = emi[:3] + albedo * glow[:, None]
     lin = diffuse_term + spec_term + refl_term + emis
 
     v = o.view
     if v in ("albedo", "checker"):
         lin = albedo
+    elif v == "ao":
+        lin = np.tile(ao, (1, 3))
     elif v == "normal":
         lin = (nrm_f * 0.5 + 0.5) ** 2.2
     elif v == "specular":

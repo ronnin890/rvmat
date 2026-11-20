@@ -44,8 +44,8 @@ void main(){
 FRAG = """#version 330 core
 in vec3 vPos; in vec3 vN; in vec3 vT; in vec2 vUV;
 out vec4 frag;
-uniform sampler2D tNormal, tDetail, tAlbedo, tSmdi, tHdri;
-uniform int hasN, hasD, hasA, hasS, hasH, detailMode;
+uniform sampler2D tNormal, tDetail, tAs, tSmdi, tHdri, tBase;
+uniform int hasN, hasD, hasA, hasS, hasH, hasB, detailMode;
 uniform vec4 mN, mD, mA, mS; uniform vec2 oN, oD, oA, oS;     // uv' = [m.x m.y; m.z m.w]*uv + off
 uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn;
 uniform vec3 amb, dif, forced, emi, spc, detailConst, sunDir, sunCol, skyTop, skyHor, skyGnd;
@@ -71,7 +71,9 @@ void main(){
     vec3 B = cross(N, T);
     vec2 uv = vUV * tiling;
     vec3 albedo = vec3(0.45);
-    if (hasA == 1) albedo = pow(texture(tAlbedo, tx(mA, oA, uv)).rgb, vec3(2.2));
+    if (hasB == 1) albedo = pow(texture(tBase, uv).rgb, vec3(2.2));      // _co с текстуры грани модели
+    float ao = 1.0;
+    if (hasA == 1) ao = clamp(texture(tAs, tx(mA, oA, uv)).r, 0.0, 1.0);   // _as = Ambient Shadow
     if (view == 8) {
         vec2 c = tx(mN, oN, uv);
         float ck = mod(floor(c.x * 8.0) + floor(c.y * 8.0), 2.0);
@@ -102,11 +104,11 @@ void main(){
     vec3 R = 2.0 * dot(Nf, V) * Nf - V;
     vec3 envc = envColor(R), ambEnv = envColor(Nf);
     vec3 kd = albedo * detail * (1.0 - metal);
-    vec3 diffuseT = kd * (amb * ambEnv * ambK * 2.0 + dif * lam * sunC + forced);
+    vec3 diffuseT = kd * (amb * ambEnv * ambK * 2.0 * ao + dif * lam * sunC + forced);
     vec3 specCol = spc * (1.0 - metal) + albedo * metal;
     vec3 specT = specCol * pow(nh, spExp) * lam * sunC * specI * (spExp + 8.0) / 25.0;
     float spcMean = (spc.r + spc.g + spc.b) / 3.0;
-    vec3 reflT = envc * specCol * fres * (specI * (0.25 + 0.75 * gloss)) * spcMean;
+    vec3 reflT = ao * envc * specCol * fres * (specI * (0.25 + 0.75 * gloss)) * spcMean;
     vec3 emis = emi + albedo * glow;
     vec3 lin = diffuseT + specT + reflT + emis;
     if (view == 1 || view == 8) lin = albedo;
@@ -116,6 +118,7 @@ void main(){
     else if (view == 5) lin = vec3(gloss);
     else if (view == 6) lin = emis;
     else if (view == 7) lin = detail * 0.5;
+    else if (view == 9) lin = vec3(ao);
     frag = vec4(pow(clamp(lin, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
 }
 """
@@ -257,6 +260,7 @@ class GLScene:
 
     # ------------------------------------------------------------------ рисование
     def draw(self, mat: Material, o: RenderOptions, resolve, mesh: Mesh, vp, hdri=None):
+        hdri = hdri if hdri is not None else getattr(o, "hdri", None)
         """Рисует в текущий framebuffer, во viewport vp=(x,y,w,h)."""
         f = self.f
         x, y, w, h = vp
@@ -305,7 +309,7 @@ class GLScene:
 
         bind_stage(1, "tNormal", "hasN", "mN", "oN")
         bind_stage(2, "tDetail", "hasD", "mD", "oD")
-        bind_stage(4, "tAlbedo", "hasA", "mA", "oA")
+        bind_stage(4, "tAs", "hasA", "mA", "oA")
         bind_stage(5, "tSmdi", "hasS", "mS", "oS")
         # HDRI
         if hdri is not None:
@@ -313,6 +317,9 @@ class GLScene:
             ht.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 1)
         else:
             self.dummy.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 0)
+        base = getattr(o, "base_color", None)
+        bt = self.texture(base) if base is not None else self.dummy
+        bt.bind(unit + 1); _set(p, "tBase", unit + 1); _set(p, "hasB", 1 if base is not None else 0)
         # detail: процедурный цвет или текстура
         s2 = mat.stage(2)
         dmode, dconst = 0, (1.0, 1.0, 1.0)
@@ -347,7 +354,7 @@ class GLScene:
         for k in ("top", "hor", "gnd"):
             _set(p, {"top": "skyTop", "hor": "skyHor", "gnd": "skyGnd"}[k], QVector3D(*[float(v) for v in L[k]]))
         _set(p, "tiling", float(o.tiling))
-        views = {"final": 0, "albedo": 1, "normal": 2, "specular": 3, "metal": 4, "gloss": 5, "emissive": 6, "detail": 7, "checker": 8}
+        views = {"final": 0, "albedo": 1, "normal": 2, "specular": 3, "metal": 4, "gloss": 5, "emissive": 6, "detail": 7, "checker": 8, "ao": 9}
         _set(p, "view", views.get(o.view, 0))
         self.vao.bind()
         _chk(f, 'before draw')

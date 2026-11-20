@@ -122,20 +122,29 @@ def test_stage_visibility_does_not_modify_rvmat(app, win):
 def test_assign_texture_with_project_root_and_preview(app, win, tmp_path):
     root = tmp_path / "P"
     (root / "dz" / "mod").mkdir(parents=True)
-    tex = root / "dz" / "mod" / "helm_as.png"
     arr = np.zeros((32, 32, 4), np.uint8); arr[..., 1] = 220; arr[..., 3] = 255
-    Image.fromarray(arr).save(tex)
+    as_tex, co = root / "dz" / "mod" / "helm_as.png", root / "dz" / "mod" / "helm_co.png"
+    Image.fromarray(arr).save(co)
+    ao = np.full((32, 32, 4), 255, np.uint8); ao[..., 0] = 60
+    Image.fromarray(ao).save(as_tex)
     win.proj.project_root = str(root)
     win.rebuild_resolver()
-    win.tab_tex.add_paths([tex])
-    assert win.tab_tex.list.count() == 1
-    win.assign_texture(4, tex)
+    win.tab_tex.add_paths([as_tex, co])
+    assert win.tab_tex.list.count() == 2
+    before = win.proj.spec.shared.to_text()
+    win.assign_texture(0, co)                                        # Base Color — только превью
+    assert win.proj.base_color == str(co) and win.proj.spec.shared.to_text() == before
+    win.assign_texture(4, as_tex)                                    # AS — стадия RVMAT
     assert win.proj.spec.shared.stage(4).texture == "dz\\mod\\helm_as.paa"
     win.panel.refresh()
     assert not win.panel.stage_eds[4].thumb.pixmap().isNull()
+    assert win.panel.base_lbl.text() == str(co)
     win.preview.opts.view = "albedo"
     img = win.preview.render_sync()
-    assert img[img.shape[0] // 2, img.shape[1] // 2, 1] > 150
+    assert img[img.shape[0] // 2, img.shape[1] // 2, 1] > 150        # зелёный Base Color
+    win.preview.opts.view = "ao"
+    img = win.preview.render_sync()
+    assert 120 < img[img.shape[0] // 2, img.shape[1] // 2, 0] < 145   # AO 60/255 → ≈133 после гаммы
 
 
 def test_assign_outside_root_uses_mapping(app, win, tmp_path):
@@ -148,15 +157,16 @@ def test_assign_outside_root_uses_mapping(app, win, tmp_path):
 
 
 def test_auto_assign_logic(app, win, tmp_path):
-    for n in ("helm_nohq", "helm_as", "helm_smdi"):
+    for n in ("helm_nohq", "helm_as", "helm_smdi", "helm_co"):
         Image.new("RGBA", (8, 8)).save(tmp_path / f"{n}.png")
-    win.tab_tex.add_paths([tmp_path / f"{n}.png" for n in ("helm_nohq", "helm_as", "helm_smdi")])
+    win.tab_tex.add_paths([tmp_path / f"{n}.png" for n in ("helm_nohq", "helm_as", "helm_smdi", "helm_co")])
     from rvmat_studio.core.textures import auto_match
     g = auto_match([Path(t) for t in win.proj.textures])["helm"]
     for st, p in g.items():
         win.assign_texture(st, p)
     sh = win.proj.spec.shared
     assert [sh.stage(i).texture for i in (1, 4, 5)] == ["helm_nohq.paa", "helm_as.paa", "helm_smdi.paa"]
+    assert win.proj.base_color.endswith("helm_co.png")               # _co ушёл в Base Color, а не в стадию
 
 
 def test_presets_tab_apply_and_save(app, win):

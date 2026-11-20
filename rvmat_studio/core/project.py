@@ -26,6 +26,7 @@ class Project:
         self.export_dir = ""
         self.textures: list[str] = []    # библиотека текстур (физические пути)
         self.tex_map: dict[str, str] = {}   # игровой путь -> физический файл (вне корня проекта)
+        self.base_color = ""             # физический файл _co для предпросмотра (в RVMAT НЕ пишется)
         self.baseline = self.spec.shared.clone()   # для «сброса» общих параметров
         self._last_change = ("", 0.0)
         self.path: Optional[Path] = None
@@ -41,7 +42,7 @@ class Project:
                 "decorative": self.spec.decorative,
                 "overrides": {s.value: v for s, v in self.spec.overrides.items() if v},
                 "enabled": sorted(s.value for s in self.enabled), "project_root": self.project_root,
-                "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map}
+                "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map, "base_color": self.base_color}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Project":
@@ -52,6 +53,7 @@ class Project:
         p.project_root, p.export_dir = d.get("project_root", ""), d.get("export_dir", "")
         p.textures = d.get("textures", [])
         p.tex_map = d.get("tex_map", {})
+        p.base_color = d.get("base_color", "")
         p.baseline = p.spec.shared.clone()
         return p
 
@@ -64,6 +66,7 @@ class Project:
         self.name, self.spec, self.enabled = np_.name, np_.spec, np_.enabled
         self.project_root, self.export_dir, self.textures = np_.project_root, np_.export_dir, np_.textures
         self.tex_map = np_.tex_map
+        self.base_color = np_.base_color
 
     def save(self, path=None):
         path = Path(path or self.path)
@@ -142,6 +145,14 @@ class Project:
     def can_undo(self): return bool(self._undo)
     @property
     def can_redo(self): return bool(self._redo)
+
+    def set_base_color(self, path: str):
+        """Базовый цвет (_co) для предпросмотра. В DayZ он приходит с текстуры грани модели, а не из RVMAT."""
+        self._change("Base Color (превью): " + (Path(path).name if path else "—"))
+        self.base_color = str(path or "")
+        if path and str(path) not in self.textures:
+            self.textures.append(str(path))
+        self._notify()
 
     def rename(self, name: str):
         self._change(f"Имя проекта → {name}")

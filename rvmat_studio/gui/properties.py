@@ -224,6 +224,7 @@ class PropertiesPanel(QWidget):
     stage_visibility = Signal(int, bool)
     assign_requested = Signal(int)
     view_requested = Signal(int)
+    base_requested = Signal()
     target_changed = Signal(str)
 
     def __init__(self, proj: Project, find: Callable, thumbs):
@@ -270,6 +271,16 @@ class PropertiesPanel(QWidget):
         sh.addRow("Pixel Shader ID", self.ps)
         sh.addRow("Vertex Shader ID", self.vs)
         gl.addLayout(sh)
+        bg = QGroupBox("Base Color (_co) — только для предпросмотра")
+        bl = QHBoxLayout(bg)
+        self.base_lbl = QLineEdit(); self.base_lbl.setReadOnly(True)
+        self.base_lbl.setPlaceholderText("в DayZ базовый цвет задаётся текстурой грани модели, а не RVMAT")
+        b_base = QPushButton("Файл…"); b_base.clicked.connect(self.base_requested.emit)
+        b_clr = QPushButton("✕"); b_clr.setFixedWidth(28); b_clr.setToolTip("Убрать Base Color")
+        b_clr.clicked.connect(lambda: self.proj.set_base_color(""))
+        for w_ in (self.base_lbl, b_base, b_clr):
+            bl.addWidget(w_)
+        gl.addWidget(bg)
         self.unknown = QLabel("")
         self.unknown.setObjectName("hint"); self.unknown.setWordWrap(True)
         gl.addWidget(self.unknown)
@@ -335,6 +346,7 @@ class PropertiesPanel(QWidget):
                 if v:
                     r.set_values(v)
                 r.set_overridden(ov(n))
+            self.base_lbl.setText(self.proj.base_color)
             self.power.set_value(m.get("specularPower") or 0)
             self.power.set_overridden(ov("specularPower"))
             self.ps.setEditText(m.get("PixelShaderID") or "")

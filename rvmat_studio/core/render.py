@@ -58,6 +58,7 @@ class RenderOptions:
     wire: bool = False
     grid: bool = False
     ssaa: int = 1
+    highlight: int = -1          # индекс части (селекшена) для подсветки
     base_color: object = None   # RGBA float32 [0..1]: _co с текстуры грани модели (в RVMAT его НЕТ)
     hdri: object = None
 
@@ -277,7 +278,14 @@ def rasterize(mesh: Mesh, sx, sy, w, W, H):
 
 class Geo:
     """Геометрическая часть кадра (не зависит от материала): кэшируется между правками параметров."""
-    __slots__ = ("ys", "xs", "pos", "nrm", "tan", "bit", "uv", "view", "samples", "tri")
+    __slots__ = ("ys", "xs", "pos", "nrm", "tan", "bit", "uv", "view", "samples", "tri", "subs")
+
+    def subset(self, mask) -> "Geo":
+        g = Geo()
+        for k in ("ys", "xs", "pos", "nrm", "tan", "bit", "uv", "view", "tri"):
+            setattr(g, k, getattr(self, k)[mask])
+        g.samples, g.subs = {}, {}
+        return g
 
 
 def prep_geometry(mesh, P, N, T, tri, b0, b1, dist) -> Geo:
@@ -299,6 +307,7 @@ def prep_geometry(mesh, P, N, T, tri, b0, b1, dist) -> Geo:
     tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-8)
     g.pos, g.nrm, g.tan, g.bit, g.uv, g.view = pos, nrm, tan, np.cross(nrm, tan).astype(np.float32), uv, view
     g.samples = {}
+    g.subs = {}
     g.tri = t
     return g
 
@@ -434,9 +443,16 @@ class RenderCache:
         self.data = None
 
 
+HIGHLIGHT_RGB = np.array([1.0, 0.55, 0.1], np.float32)
+
+
 def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional[Mesh] = None,
-           cache: Optional[RenderCache] = None) -> np.ndarray:
-    """-> RGBA uint8 (H,W,4)."""
+           cache: Optional[RenderCache] = None, part_mats: Optional[dict] = None) -> np.ndarray:
+    """-> RGBA uint8 (H,W,4).
+
+    part_mats: {индекс части: (Material, base_color)} — материал для каждой части (селекшена) модели;
+    части без записи рисуются материалом `mat` и `o.base_color`."""
+    import copy
     mesh = mesh or get_shape(o.shape)
     s = max(1, o.ssaa)
     W, H = o.width * s, o.height * s
@@ -452,8 +468,35 @@ def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional
     L = LIGHTING.get(o.lighting, LIGHTING["Студия"])
     img = background(W, H, L).astype(np.float32)
     if geo is not None:
-        ys, xs, col = shade(geo, mat, o, resolve)
-        img[ys, xs] = col
+        if part_mats and mesh.face_part is not None:
+            part_px = mesh.face_part[geo.tri]
+            done = np.zeros(len(part_px), bool)
+            for pid in sorted(part_mats):
+                m_, base_ = part_mats[pid]
+                sel = part_px == pid
+                if not sel.any():
+                    continue
+                done |= sel
+                sub = geo.subs.get(pid)
+                if sub is None or len(sub.uv) != int(sel.sum()):
+                    sub = geo.subs[pid] = geo.subset(sel)
+                op = copy.copy(o)
+                op.base_color = base_
+                ys, xs, col = shade(sub, m_, op, resolve)
+                img[ys, xs] = col
+            rest = ~done
+            if rest.any():
+                sub = geo.subs.get("rest")
+                if sub is None or len(sub.uv) != int(rest.sum()):
+                    sub = geo.subs["rest"] = geo.subset(rest)
+                ys, xs, col = shade(sub, mat, o, resolve)
+                img[ys, xs] = col
+        else:
+            ys, xs, col = shade(geo, mat, o, resolve)
+            img[ys, xs] = col
+        if o.highlight >= 0 and mesh.face_part is not None:
+            hp = mesh.face_part[geo.tri] == o.highlight
+            img[geo.ys[hp], geo.xs[hp]] = img[geo.ys[hp], geo.xs[hp]] * 0.6 + HIGHLIGHT_RGB * 0.4
     if s > 1:
         img = img.reshape(o.height, s, o.width, s, 3).mean((1, 3))
     out = np.dstack([(np.clip(img, 0, 1) * 255).astype(np.uint8), np.full((o.height, o.width), 255, np.uint8)])
@@ -471,6 +514,16 @@ def render(mat: Material, o: RenderOptions, resolve: TexResolver, mesh: Optional
                 d.line([(0, j), (o.width, j)], fill=(255, 255, 255, 25))
         out = np.asarray(im)
     return out
+
+
+def pick_part(mesh: Mesh, o: RenderOptions, W: int, H: int, x: float, y: float) -> int:
+    """Индекс части под точкой (x,y) в кадре W×H или -1."""
+    if mesh.face_part is None or not (0 <= x < W and 0 <= y < H):
+        return -1
+    P, N, T, w, sx, sy, dist = project_mesh(mesh, o, W, H)
+    tri, _, _ = rasterize(mesh, sx, sy, w, W, H)
+    t = int(tri[int(y), int(x)])
+    return int(mesh.face_part[t]) if t >= 0 else -1
 
 
 def render_uv_layout(mesh: Mesh, size=512, background_tex: Optional[np.ndarray] = None) -> np.ndarray:

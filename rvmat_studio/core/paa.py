@@ -176,8 +176,25 @@ def decode_dxt(data: bytes, w: int, h: int, kind: str) -> np.ndarray:
     return img[:h, :w]
 
 
-def read_paa(data: bytes) -> tuple[np.ndarray, str]:
-    """-> (RGBA uint8 HxWx4, формат)."""
+NORMAL_HINTS = ("nohq", "novhq", "no", "nopx", "nonex")     # суффиксы имён нормалей
+NON_NORMAL_HINTS = ("as", "smdi", "co", "ca", "dt", "mc", "sm", "mca", "lco", "cat")
+
+
+def unswizzle_normal(rgba: np.ndarray) -> np.ndarray:
+    """Игровой _nohq (DXT5) хранит X нормали инвертированным в альфе: R_файла = 255−A_ист, A_файла = 255−R_ист.
+    Возвращает «исходные» каналы: R = X, G = Y, B как в файле. (Описание: пакет woozymasta/paa и конфиг TexView;
+    сама структура тега SWIZ в вики BI не задокументирована.)"""
+    out = rgba.copy()
+    out[:, :, 0] = 255 - rgba[:, :, 3]
+    out[:, :, 3] = 255 - rgba[:, :, 0]
+    return out
+
+
+def read_paa(data: bytes, name: str = "", swizzle=None) -> tuple[np.ndarray, str]:
+    """-> (RGBA uint8 HxWx4, формат).
+
+    swizzle: True/False — принудительно; None — авто: для DXT5 применяется обратная перестановка нормали,
+    если имя заканчивается на _nohq/_no… либо в файле есть тег SWIZ и имя не указывает на другой тип карты."""
     if len(data) < 12:
         raise PaaError("Файл слишком мал")
     tag = struct.unpack_from("<H", data, 0)[0]
@@ -185,7 +202,9 @@ def read_paa(data: bytes) -> tuple[np.ndarray, str]:
         raise PaaError("Неподдерживаемый (палитровый) PAA")
     kind = TAGS[tag]
     pos = 2
+    tags = set()
     while data[pos:pos + 4] == b"GGAT":
+        tags.add(data[pos + 4:pos + 8][::-1].decode("latin1"))
         ln = struct.unpack_from("<I", data, pos + 8)[0]
         pos += 12 + ln
     pos += 2                                  # размер палитры
@@ -199,7 +218,11 @@ def read_paa(data: bytes) -> tuple[np.ndarray, str]:
         exp = ((w + 3) // 4) * ((h + 3) // 4) * (8 if kind == "DXT1" else 16)
         if lzo:
             raw = lzo1x_decompress(raw, exp)
-        return decode_dxt(raw, w, h, kind), kind
+        img = decode_dxt(raw, w, h, kind)
+        if swizzle is None and kind in ("DXT5", "DXT4"):
+            suf = name.lower().rsplit(".", 1)[0].rsplit("_", 1)[-1] if "_" in name else ""
+            swizzle = suf in NORMAL_HINTS or ("SWIZ" in tags and suf not in NON_NORMAL_HINTS)
+        return (unswizzle_normal(img) if swizzle else img), kind
     bpp = {"ARGB4444": 2, "ARGB1555": 2, "ARGB8888": 4, "AI88": 2}[kind]
     if len(raw) < w * h * bpp:
         raise PaaError("Сжатие LZSS для этого формата не поддерживается")

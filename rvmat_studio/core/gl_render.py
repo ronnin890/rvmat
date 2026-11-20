@@ -49,7 +49,7 @@ uniform int hasN, hasD, hasA, hasS, hasH, hasB, detailMode;
 uniform vec4 mN, mD, mA, mS; uniform vec2 oN, oD, oA, oS;     // uv' = [m.x m.y; m.z m.w]*uv + off
 uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn;
 uniform vec3 amb, dif, forced, emi, spc, detailConst, sunDir, sunCol, skyTop, skyHor, skyGnd;
-uniform int view;
+uniform int view; uniform float hl;
 vec2 tx(vec4 m, vec2 o, vec2 uv){ return vec2(m.x*uv.x + m.y*uv.y, m.z*uv.x + m.w*uv.y) + o; }
 vec3 envColor(vec3 d){
     vec3 c;
@@ -119,7 +119,9 @@ void main(){
     else if (view == 6) lin = emis;
     else if (view == 7) lin = detail * 0.5;
     else if (view == 9) lin = vec3(ao);
-    frag = vec4(pow(clamp(lin, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+    vec3 outc = pow(clamp(lin, 0.0, 1.0), vec3(1.0 / 2.2));
+    outc = mix(outc, vec3(1.0, 0.55, 0.1), 0.4 * hl);
+    frag = vec4(outc, 1.0);
 }
 """
 
@@ -185,6 +187,7 @@ class GLScene:
         self.mesh_key = None
         self.vao = self.vbo = self.ibo = self.ebo = self.vao_line = None
         self.n_idx = self.n_edge = 0
+        self.ranges = []
         self.tex: dict = {}          # id(array) -> (QOpenGLTexture, array)
         self.dummy = self._texture(np.zeros((1, 1, 4), np.float32))
 
@@ -256,10 +259,11 @@ class GLScene:
         self.line.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride)
         self.vao_line.release()
         self.n_idx, self.n_edge = idx.size, edges.size
+        self.ranges = mesh.part_ranges() if mesh.face_part is not None else []
         _chk(self.f, 'set_mesh')
 
     # ------------------------------------------------------------------ рисование
-    def draw(self, mat: Material, o: RenderOptions, resolve, mesh: Mesh, vp, hdri=None):
+    def draw(self, mat: Material, o: RenderOptions, resolve, mesh: Mesh, vp, hdri=None, part_mats=None):
         hdri = hdri if hdri is not None else getattr(o, "hdri", None)
         """Рисует в текущий framebuffer, во viewport vp=(x,y,w,h)."""
         f = self.f
@@ -288,77 +292,88 @@ class GLScene:
         p = self.prog
         p.bind()
         cam_uniforms(p)
-        unit = 0
-        free = []
+        def apply(mat, base, hl):
+            unit = 0
 
-        def bind_stage(idx, sampler, flag, mname, oname):
-            nonlocal unit
-            s = mat.stage(idx)
-            arr = None
-            if s is not None and o.stages_on.get(idx, True) and s.texture:
-                arr = resolve(s.texture)
-            M, off = _uv_matrix(s)
-            _set(p, mname, QVector4D(float(M[0, 0]), float(M[0, 1]), float(M[1, 0]), float(M[1, 1])))
-            _set(p, oname, QVector2D(float(off[0]), float(off[1])))
-            t = self.texture(arr) if arr is not None else self.dummy
-            t.bind(unit)
-            _set(p, sampler, unit)
-            unit += 1
-            _set(p, flag, 1 if arr is not None else 0)
-            return arr is not None
+            def bind_stage(idx, sampler, flag, mname, oname):
+                nonlocal unit
+                s = mat.stage(idx)
+                arr = None
+                if s is not None and o.stages_on.get(idx, True) and s.texture:
+                    arr = resolve(s.texture)
+                M, off = _uv_matrix(s)
+                _set(p, mname, QVector4D(float(M[0, 0]), float(M[0, 1]), float(M[1, 0]), float(M[1, 1])))
+                _set(p, oname, QVector2D(float(off[0]), float(off[1])))
+                t = self.texture(arr) if arr is not None else self.dummy
+                t.bind(unit)
+                _set(p, sampler, unit)
+                unit += 1
+                _set(p, flag, 1 if arr is not None else 0)
+                return arr is not None
 
-        bind_stage(1, "tNormal", "hasN", "mN", "oN")
-        bind_stage(2, "tDetail", "hasD", "mD", "oD")
-        bind_stage(4, "tAs", "hasA", "mA", "oA")
-        bind_stage(5, "tSmdi", "hasS", "mS", "oS")
-        # HDRI
-        if hdri is not None:
-            ht = self.texture(np.clip(hdri, 0, 1) ** (1 / 2.2))
-            ht.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 1)
-        else:
-            self.dummy.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 0)
-        base = getattr(o, "base_color", None)
-        bt = self.texture(base) if base is not None else self.dummy
-        bt.bind(unit + 1); _set(p, "tBase", unit + 1); _set(p, "hasB", 1 if base is not None else 0)
-        # detail: процедурный цвет или текстура
-        s2 = mat.stage(2)
-        dmode, dconst = 0, (1.0, 1.0, 1.0)
-        if s2 and o.stages_on.get(2, True) and s2.texture:
-            if is_procedural(s2.texture):
-                pr = parse_procedural(s2.texture)
-                if pr.rgba:
-                    dmode, dconst = 1, pr.rgba[:3]
-            elif p is not None and s2.texture and resolve(s2.texture) is not None:
-                dmode = 2
-        _set(p, "detailMode", dmode)
-        _set(p, "detailConst", QVector3D(*[float(c) for c in dconst]))
-        col = lambda name, d: [float(v) for v in (mat.get(name) or d)[:4]]
-        for name, d in (("ambient", [1] * 4), ("diffuse", [1] * 4), ("forcedDiffuse", [0, 0, 0, 1]), ("emmisive", [0] * 4), ("specular", [0] * 4)):
-            key = {"ambient": "amb", "diffuse": "dif", "forcedDiffuse": "forced", "emmisive": "emi", "specular": "spc"}[name]
-            _set(p, key, QVector3D(*col(name, d)[:3]))
-        _set(p, "power", float(mat.get("specularPower") or 10))
-        fn, fk = 1.5, 0.0
-        s6 = mat.stage(6)
-        if s6 and o.stages_on.get(6, True) and s6.texture and is_procedural(s6.texture):
-            pr = parse_procedural(s6.texture)
-            if pr.fresnel:
-                fn, fk = pr.fresnel
-        _set(p, "fresN", float(fn)); _set(p, "fresK", float(fk))
-        ang = math.radians(o.light_rot)
-        sv = np.array(L["sun"], np.float32)
-        sv = np.array([sv[0] * math.cos(ang) + sv[2] * math.sin(ang), sv[1], -sv[0] * math.sin(ang) + sv[2] * math.cos(ang)])
-        sv /= np.linalg.norm(sv)
-        _set(p, "sunDir", QVector3D(*[float(v) for v in sv]))
-        _set(p, "sunCol", QVector3D(*[float(v) for v in L["col"]]))
-        _set(p, "sunI", float(L["i"])); _set(p, "ambK", float(L["amb"]))
-        for k in ("top", "hor", "gnd"):
-            _set(p, {"top": "skyTop", "hor": "skyHor", "gnd": "skyGnd"}[k], QVector3D(*[float(v) for v in L[k]]))
-        _set(p, "tiling", float(o.tiling))
-        views = {"final": 0, "albedo": 1, "normal": 2, "specular": 3, "metal": 4, "gloss": 5, "emissive": 6, "detail": 7, "checker": 8, "ao": 9}
-        _set(p, "view", views.get(o.view, 0))
+            bind_stage(1, "tNormal", "hasN", "mN", "oN")
+            bind_stage(2, "tDetail", "hasD", "mD", "oD")
+            bind_stage(4, "tAs", "hasA", "mA", "oA")
+            bind_stage(5, "tSmdi", "hasS", "mS", "oS")
+            # HDRI
+            if hdri is not None:
+                ht = self.texture(np.clip(hdri, 0, 1) ** (1 / 2.2))
+                ht.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 1)
+            else:
+                self.dummy.bind(unit); _set(p, "tHdri", unit); _set(p, "hasH", 0)
+            bt = self.texture(base) if base is not None else self.dummy
+            bt.bind(unit + 1); _set(p, "tBase", unit + 1); _set(p, "hasB", 1 if base is not None else 0)
+            # detail: процедурный цвет или текстура
+            s2 = mat.stage(2)
+            dmode, dconst = 0, (1.0, 1.0, 1.0)
+            if s2 and o.stages_on.get(2, True) and s2.texture:
+                if is_procedural(s2.texture):
+                    pr = parse_procedural(s2.texture)
+                    if pr.rgba:
+                        dmode, dconst = 1, pr.rgba[:3]
+                elif p is not None and s2.texture and resolve(s2.texture) is not None:
+                    dmode = 2
+            _set(p, "detailMode", dmode)
+            _set(p, "detailConst", QVector3D(*[float(c) for c in dconst]))
+            col = lambda name, d: [float(v) for v in (mat.get(name) or d)[:4]]
+            for name, d in (("ambient", [1] * 4), ("diffuse", [1] * 4), ("forcedDiffuse", [0, 0, 0, 1]), ("emmisive", [0] * 4), ("specular", [0] * 4)):
+                key = {"ambient": "amb", "diffuse": "dif", "forcedDiffuse": "forced", "emmisive": "emi", "specular": "spc"}[name]
+                _set(p, key, QVector3D(*col(name, d)[:3]))
+            _set(p, "power", float(mat.get("specularPower") or 10))
+            fn, fk = 1.5, 0.0
+            s6 = mat.stage(6)
+            if s6 and o.stages_on.get(6, True) and s6.texture and is_procedural(s6.texture):
+                pr = parse_procedural(s6.texture)
+                if pr.fresnel:
+                    fn, fk = pr.fresnel
+            _set(p, "fresN", float(fn)); _set(p, "fresK", float(fk))
+            ang = math.radians(o.light_rot)
+            sv = np.array(L["sun"], np.float32)
+            sv = np.array([sv[0] * math.cos(ang) + sv[2] * math.sin(ang), sv[1], -sv[0] * math.sin(ang) + sv[2] * math.cos(ang)])
+            sv /= np.linalg.norm(sv)
+            _set(p, "sunDir", QVector3D(*[float(v) for v in sv]))
+            _set(p, "sunCol", QVector3D(*[float(v) for v in L["col"]]))
+            _set(p, "sunI", float(L["i"])); _set(p, "ambK", float(L["amb"]))
+            for k in ("top", "hor", "gnd"):
+                _set(p, {"top": "skyTop", "hor": "skyHor", "gnd": "skyGnd"}[k], QVector3D(*[float(v) for v in L[k]]))
+            _set(p, "tiling", float(o.tiling))
+            views = {"final": 0, "albedo": 1, "normal": 2, "specular": 3, "metal": 4, "gloss": 5, "emissive": 6, "detail": 7, "checker": 8, "ao": 9}
+            _set(p, "view", views.get(o.view, 0))
+            _set(p, "hl", float(hl))
+
+        default_base = getattr(o, "base_color", None)
         self.vao.bind()
         _chk(f, 'before draw')
-        f.glDrawElements(GL_TRIANGLES, self.n_idx, GL_UNSIGNED_INT, _NULL)
+        if part_mats and self.ranges:
+            for pid, (cnt_start, cnt) in enumerate(self.ranges):
+                if not cnt:
+                    continue
+                m_, b_ = part_mats.get(pid, (mat, default_base))
+                apply(m_, b_, 1.0 if pid == o.highlight else 0.0)
+                f.glDrawElements(GL_TRIANGLES, cnt * 3, GL_UNSIGNED_INT, shiboken6.VoidPtr(cnt_start * 12))
+        else:
+            apply(mat, default_base, 0.0)
+            f.glDrawElements(GL_TRIANGLES, self.n_idx, GL_UNSIGNED_INT, _NULL)
         _chk(f, 'draw mesh')
         self.vao.release()
         p.release()
@@ -403,7 +418,7 @@ class GLOffscreen:
         self.scene = GLScene(self.ctx)
         self.info = (self.ctx.functions().glGetString(0x1F01) or b"", self.ctx.functions().glGetString(0x1F02) or b"")
 
-    def render(self, mat, o: RenderOptions, resolve, mesh=None, hdri=None, samples=4) -> np.ndarray:
+    def render(self, mat, o: RenderOptions, resolve, mesh=None, hdri=None, samples=4, parts=None) -> np.ndarray:
         self.ctx.makeCurrent(self.surface)
         mesh = mesh or get_shape(o.shape)
         fmt = QOpenGLFramebufferObjectFormat()
@@ -411,7 +426,7 @@ class GLOffscreen:
         fmt.setSamples(samples)
         fbo = QOpenGLFramebufferObject(QSize(o.width, o.height), fmt)
         fbo.bind()
-        self.scene.draw(mat, o, resolve, mesh, (0, 0, o.width, o.height), hdri)
+        self.scene.draw(mat, o, resolve, mesh, (0, 0, o.width, o.height), hdri, parts)
         fbo.release()
         img = fbo.toImage().convertToFormat(fbo.toImage().Format.Format_RGBA8888)
         ptr = img.constBits()

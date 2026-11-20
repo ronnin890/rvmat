@@ -395,3 +395,39 @@ def test_workbench_errors_are_explained(tmp_path):
         ex.check_in_workbench(str(wb), "", str(tmp_path / "nodrive"), "", "")
     with pytest.raises(ex.WorkbenchError, match="dayz.gproj"):
         ex.check_in_workbench(str(wb), "", str(tmp_path), "", "")
+
+
+# ------------------------------------------------------------------ _nohq: перестановка каналов
+def _dxt5_paa(r, g, b, a, w=8, h=8, tags=(b"SWIZ",)):
+    c565 = ((r * 31 // 255) << 11) | ((g * 63 // 255) << 5) | (b * 31 // 255)
+    blk = bytes([a, a, 0, 0, 0, 0, 0, 0]) + struct.pack("<HHI", c565, c565, 0)
+    body = blk * (((w + 3) // 4) * ((h + 3) // 4))
+    hdr = struct.pack("<H", 0xFF05)
+    for t in tags:
+        hdr += b"GGAT" + t[::-1] + struct.pack("<I", 4) + b"\x00\x00\x00\x00"
+    return hdr + struct.pack("<H", 0) + struct.pack("<HH", w, h) + len(body).to_bytes(3, "little") + body
+
+
+def test_nohq_paa_is_unswizzled_to_purple_not_cyan():
+    # плоская нормаль в файле: R=0, G=128, B=255, A=128 (сырые каналы = «голубой»)
+    paa = _dxt5_paa(0, 128, 255, 128)
+    raw, _ = read_paa(paa, "x_as.paa")                      # другое имя → без перестановки
+    assert raw[0, 0, 0] < 10 and raw[0, 0, 2] > 240          # голубой (0,128,255)
+    fixed, _ = read_paa(paa, "helm_nohq.paa")
+    r, g, b, a = (int(v) for v in fixed[0, 0])
+    assert abs(r - 127) < 6 and abs(g - 128) < 6 and b > 240 and a > 240    # (127,128,255) — фиолетово-синий
+    auto, _ = read_paa(paa, "")                              # тег SWIZ без имени → тоже применяется
+    assert (auto == fixed).all()
+    assert (read_paa(paa, "helm_smdi.paa")[0] == raw).all()   # SMDI с тегом не трогаем
+    assert (read_paa(paa, "helm_nohq.paa", swizzle=False)[0] == raw).all()
+    nm = fixed[..., :3].astype(float) / 127.5 - 1
+    assert abs(nm[0, 0, 0]) < 0.06 and abs(nm[0, 0, 1]) < 0.06      # X≈0, Y≈0 → вектор вдоль Z
+
+
+def test_dxt1_and_png_are_never_swizzled(tmp_path):
+    rgba = np.zeros((8, 8, 4), np.uint8); rgba[..., :3] = (128, 128, 255); rgba[..., 3] = 255
+    a, _ = read_paa(write_paa_dxt1_raw(rgba), "x_nohq.paa")
+    assert abs(int(a[0, 0, 0]) - 128) < 12 and a[0, 0, 3] == 255
+    Image.fromarray(rgba).save(tmp_path / "n_nohq.png")
+    from rvmat_studio.core.textures import load_rgba
+    assert (load_rgba(tmp_path / "n_nohq.png")[0] == rgba).all()

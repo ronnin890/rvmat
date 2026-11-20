@@ -15,6 +15,28 @@ class Mesh:
     uv: np.ndarray     # (N,2)
     f: np.ndarray      # (M,3)
     t: np.ndarray = None   # tangents (N,3)
+    face_part: np.ndarray = None      # (M,) индекс части (селекшена) для каждой грани
+    part_names: list = None           # имена частей; None/[] — модель без селекшенов
+
+    @property
+    def n_parts(self) -> int:
+        return len(self.part_names or [])
+
+    def set_parts(self, face_part, names) -> "Mesh":
+        """Задать селекшены. Грани сортируются по частям (диапазоны для отрисовки одним вызовом)."""
+        fp = np.asarray(face_part, np.int32)
+        order = np.argsort(fp, kind="stable")
+        self.f, self.face_part = self.f[order], fp[order]
+        self.part_names = list(names)
+        return self
+
+    def part_ranges(self) -> list[tuple[int, int]]:
+        """[(первая грань, число граней)] для каждой части (в порядке part_names)."""
+        out = []
+        for i in range(self.n_parts):
+            idx = np.nonzero(self.face_part == i)[0]
+            out.append((int(idx[0]), len(idx)) if len(idx) else (0, 0))
+        return out
 
     def finalize(self) -> "Mesh":
         self.v = self.v.astype(np.float32)
@@ -27,6 +49,24 @@ class Mesh:
         self.n = (self.n / np.maximum(np.linalg.norm(self.n, axis=1, keepdims=True), 1e-8)).astype(np.float32)
         self.t = tangents(self)
         return self
+
+
+def parts_by_axis(m: Mesh, axis: int, neg: str, pos: str) -> Mesh:
+    c = m.v[m.f][:, :, axis].mean(1)
+    return m.set_parts((c >= 0).astype(int), [neg, pos])
+
+
+def parts_by_normal(m: Mesh, names: dict) -> Mesh:
+    """names: {(ось, знак): имя}; часть — по доминирующей оси нормали грани."""
+    fn = np.cross(m.v[m.f[:, 1]] - m.v[m.f[:, 0]], m.v[m.f[:, 2]] - m.v[m.f[:, 0]])
+    ax = np.abs(fn).argmax(1)
+    sg = np.sign(fn[np.arange(len(fn)), ax]).astype(int)
+    # ориентация граней в наших генераторах непостоянна — определяем знак по положению центра грани
+    ctr = m.v[m.f].mean(1)
+    sg = np.sign(ctr[np.arange(len(ctr)), ax]).astype(int)
+    keys = list(names)
+    idx = np.array([keys.index((int(a), int(g))) if (int(a), int(g)) in names else 0 for a, g in zip(ax, sg)])
+    return m.set_parts(idx, [names[k] for k in keys])
 
 
 def vertex_normals(v, f):
@@ -72,7 +112,7 @@ def sphere(seg=36) -> Mesh:
         P = np.stack([np.sin(ph) * np.cos(th), np.cos(ph), np.sin(ph) * np.sin(th)], -1)
         return P, np.stack([u, 1 - v], -1)
     v, uv, f = _grid(seg, seg // 2 + 2, fn)
-    return Mesh(v, v.copy(), uv, f).finalize()
+    return parts_by_axis(Mesh(v, v.copy(), uv, f).finalize(), 1, "нижняя", "верхняя")
 
 
 def torus(nu=48, nv=24, R=1.0, r=0.4) -> Mesh:
@@ -122,7 +162,8 @@ def cube() -> Mesh:
                 q.append((tuple(c), n))
     # исправить ориентацию UV для перевёрнутых граней — для теста достаточно
     v, n, uv, f = _quad_mesh(q)
-    return Mesh(v, n, uv, f).finalize()
+    m = Mesh(v, n, uv, f).finalize()
+    return parts_by_normal(m, {(0, -1): "-X", (0, 1): "+X", (1, -1): "-Y", (1, 1): "+Y", (2, -1): "-Z", (2, 1): "+Z"})
 
 
 def cylinder(seg=40) -> Mesh:
@@ -142,7 +183,14 @@ def cylinder(seg=40) -> Mesh:
     off, V, N, U, F = 0, [], [], [], []
     for pv, pn, pu, pf in parts:
         V.append(pv); N.append(pn); U.append(pu); F.append(pf + off); off += len(pv)
-    return Mesh(np.vstack(V), np.vstack(N), np.vstack(U), np.vstack(F)).finalize()
+    m = Mesh(np.vstack(V), np.vstack(N), np.vstack(U), np.vstack(F)).finalize()
+    side_n = (parts_a := len(parts[0][3]))
+    fp = np.zeros(len(m.f), int)
+    fp[:side_n] = 0                                   # боковая поверхность
+    cap_top = len(parts[1][3])
+    fp[side_n:side_n + cap_top] = 1                   # верхняя крышка (y=+1 до нормализации)
+    fp[side_n + cap_top:] = 2
+    return m.set_parts(fp, ["бок", "верх", "низ"])
 
 
 def capsule_test(seg=36) -> Mesh:
@@ -153,29 +201,39 @@ def capsule_test(seg=36) -> Mesh:
         rad = np.sin(ph) * (0.6 + 0.04 * np.sin(v * 40))
         return np.stack([rad * np.cos(th), y, rad * np.sin(th)], -1), np.stack([u, 1 - v], -1)
     v, uv, f = _grid(seg, seg, fn)
-    return Mesh(v, None, uv, f).finalize()
+    return parts_by_axis(Mesh(v, None, uv, f).finalize(), 1, "низ", "верх")
 
 
 def load_obj(path) -> Mesh:
-    V, VT, VN, faces = [], [], [], []
+    """OBJ: части берутся из групп `g`/`o` (если их нет — из `usemtl`)."""
+    V, VT, VN, faces, face_group, face_mtl = [], [], [], [], [], []
+    group = mtl = None
     for line in Path(path).read_text("utf-8", "ignore").splitlines():
-        p = line.split()
+        p = line.split(None, 1)
         if not p:
             continue
-        if p[0] == "v":
-            V.append([float(x) for x in p[1:4]])
-        elif p[0] == "vt":
-            VT.append([float(x) for x in p[1:3]])
-        elif p[0] == "vn":
-            VN.append([float(x) for x in p[1:4]])
-        elif p[0] == "f":
-            faces.append([tuple((int(x) if x else 0) for x in (tok.split("/") + ["", ""])[:3]) for tok in p[1:]])
+        k = p[0]
+        rest = p[1].strip() if len(p) > 1 else ""
+        if k == "v":
+            V.append([float(x) for x in rest.split()[:3]])
+        elif k == "vt":
+            VT.append([float(x) for x in rest.split()[:2]])
+        elif k == "vn":
+            VN.append([float(x) for x in rest.split()[:3]])
+        elif k in ("g", "o"):
+            group = rest or None
+        elif k == "usemtl":
+            mtl = rest or None
+        elif k == "f":
+            faces.append([tuple((int(x) if x else 0) for x in (tok.split("/") + ["", ""])[:3]) for tok in rest.split()])
+            face_group.append(group)
+            face_mtl.append(mtl)
     if not V or not faces:
         raise ValueError("OBJ не содержит геометрии")
-    key, verts, norms, uvs, tri = {}, [], [], [], []
+    key, verts, norms, uvs, tri, tri_src = {}, [], [], [], [], []
     def idx(i, n):
         return i - 1 if i > 0 else n + i
-    for fc in faces:
+    for fi, fc in enumerate(faces):
         ids = []
         for (vi, ti, ni) in fc:
             k = (vi, ti, ni)
@@ -187,12 +245,24 @@ def load_obj(path) -> Mesh:
             ids.append(key[k])
         for i in range(1, len(ids) - 1):
             tri.append((ids[0], ids[i], ids[i + 1]))
+            tri_src.append(fi)
     v = np.array(verts, np.float32)
     n = np.array(norms, np.float32)
     f = np.array(tri)
     if not np.abs(n).sum():
         n = None
-    return Mesh(v, n, np.array(uvs, np.float32), f).finalize()
+    m = Mesh(v, n, np.array(uvs, np.float32), f)
+    labels = face_group if any(face_group) else face_mtl
+    if any(labels):
+        names, fp = [], []
+        for fi in tri_src:
+            nm = labels[fi] or "(без группы)"
+            if nm not in names:
+                names.append(nm)
+            fp.append(names.index(nm))
+        m.finalize()
+        return m.set_parts(fp, names) if len(names) > 1 else m
+    return m.finalize()
 
 
 SHAPES = {"Сфера": sphere, "Куб": cube, "Цилиндр": cylinder, "Плоскость": plane, "Тор": torus,

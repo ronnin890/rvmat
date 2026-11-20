@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHeaderView, QTableWidget, QTableWidgetItem, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
                                QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
@@ -264,3 +264,124 @@ class StatesTab(QWidget):
         d = diff_materials(base, self.proj.effective(s))
         self.diff.setPlainText("\n".join(f"{k}: {a} → {b}" for k, a, b in d) or "(нет отличий)")
         self.selected.emit(s.value)
+
+
+class PartsTab(QWidget):
+    """Материалы проекта (слоты) и назначение их частям (селекшенам) модели."""
+    part_selected = Signal(int)
+
+    def __init__(self, proj: Project, get_mesh):
+        super().__init__()
+        self.proj, self.get_mesh = proj, get_mesh
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("<b>Материалы проекта</b> (у каждого свой комплект RVMAT):"))
+        self.slots = QListWidget()
+        self.slots.setMaximumHeight(130)
+        self.slots.currentRowChanged.connect(self._slot_selected)
+        v.addWidget(self.slots)
+        row = QHBoxLayout()
+        for text, fn in (("+ Новый", self._new), ("Копия", self._dup), ("Имя", self._rename), ("Удалить", self._del)):
+            b = QPushButton(text); b.clicked.connect(fn); row.addWidget(b)
+        v.addLayout(row)
+        self.info = QLabel("")
+        self.info.setObjectName("hint"); self.info.setWordWrap(True)
+        v.addWidget(self.info)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Часть (селекшен)", "Материал"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.itemSelectionChanged.connect(self._row_selected)
+        v.addWidget(self.table, 1)
+        hint = QLabel("Клик по части на модели выделяет её. Части без назначения используют первый материал. "
+                      "Части берутся из групп OBJ, объектов FBX или зон тестовых моделей.")
+        hint.setObjectName("hint"); hint.setWordWrap(True)
+        v.addWidget(hint)
+        self._lock = False
+        self.refresh()
+
+    # --- заполнение
+    def refresh(self):
+        self._lock = True
+        try:
+            mesh = self.get_mesh()
+            parts = list(mesh.part_names or [])
+            names = [s.name for s in self.proj.slots]
+            used = {n: 0 for n in names}
+            for p_ in parts:
+                used[self.proj.slot_for_part(p_).name] += 1
+            self.slots.clear()
+            for i, sl in enumerate(self.proj.slots):
+                it = QListWidgetItem(f"{'● ' if i == self.proj.active else '   '}{sl.name}   ·   частей: {used[sl.name]}")
+                self.slots.addItem(it)
+            self.slots.setCurrentRow(self.proj.active)
+            sel = self.table.currentRow()
+            self.table.setRowCount(0)                 # уничтожает старые виджеты ячеек (иначе копятся в углу таблицы)
+            self.table.setRowCount(len(parts))
+            for r, name in enumerate(parts):
+                it = QTableWidgetItem(name)
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(r, 0, it)
+                cb = QComboBox()
+                cb.addItems(names)
+                cb.setCurrentText(self.proj.slot_for_part(name).name)
+                cb.currentTextChanged.connect(lambda t, n=name: self._assign(n, t))
+                self.table.setCellWidget(r, 1, cb)
+            if 0 <= sel < len(parts):
+                self.table.selectRow(sel)
+            self.info.setText(f"Модель: {len(parts)} част(ей)" if parts else "У этой модели нет частей (селекшенов): материал применяется ко всей модели.")
+        finally:
+            self._lock = False
+
+    def select_part(self, idx: int):
+        self._lock = True
+        try:
+            if 0 <= idx < self.table.rowCount():
+                self.table.selectRow(idx)
+            else:
+                self.table.clearSelection()
+        finally:
+            self._lock = False
+        self._row_selected(force=True)
+
+    # --- действия
+    def _row_selected(self, force=False):
+        if self._lock and not force:
+            return
+        r = self.table.currentRow() if self.table.selectedItems() else -1
+        self.part_selected.emit(r)
+
+    def _slot_selected(self, row):
+        if not self._lock and row >= 0:
+            self.proj.set_active(row)
+
+    def _assign(self, part, slot_name):
+        if not self._lock:
+            self.proj.assign_part(part, slot_name)
+
+    def _new(self):
+        n, ok = QInputDialog.getText(self, "Новый материал", "Имя (основа имён файлов, напр. helmet_glass):", text=f"{self.proj.title}_part{len(self.proj.slots) + 1}")
+        if ok and n.strip():
+            self._try(lambda: self.proj.add_slot(n, copy_from=None))
+
+    def _dup(self):
+        n, ok = QInputDialog.getText(self, "Копия материала", "Имя копии:", text=self.proj.name + "_copy")
+        if ok and n.strip():
+            self._try(lambda: self.proj.add_slot(n, copy_from=self.proj.active))
+
+    def _rename(self):
+        n, ok = QInputDialog.getText(self, "Имя материала", "Имя:", text=self.proj.name)
+        if ok and n.strip():
+            self._try(lambda: self.proj.rename(n))
+
+    def _del(self):
+        if len(self.proj.slots) > 1 and QMessageBox.question(self, "Удалить", f"Удалить материал «{self.proj.name}»?") == QMessageBox.Yes:
+            self._try(lambda: self.proj.remove_slot(self.proj.active))
+
+    def _try(self, fn):
+        try:
+            fn()
+        except (ValueError, KeyError) as e:
+            QMessageBox.warning(self, "Материалы", str(e))

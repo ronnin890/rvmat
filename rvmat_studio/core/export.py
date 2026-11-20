@@ -22,7 +22,10 @@ class ExportPlan:
 
 def plan_kit(proj: Project, out_dir) -> ExportPlan:
     out = Path(out_dir)
-    files = {out / fn: m.to_text() for fn, m in proj.kit().items()}
+    files = {out / fn: m.to_text() for fn, m in proj.kit_all().items()}
+    if proj.part_map:                                  # соответствие селекшенов материалам (для Object Builder)
+        lines = [f"{part};{proj.slot_for_part(part).name}.rvmat" for part in sorted(proj.part_map)]
+        files[out / f"{proj.title}_selections.txt"] = "# селекшен;материал\r\n" + "\r\n".join(lines) + "\r\n"
     return ExportPlan(files, [p for p in files if p.exists()], proj.validate())
 
 
@@ -53,7 +56,7 @@ def export_project(proj: Project, out_dir, copy_textures=True, overwrite=False) 
     out = Path(out_dir)
     plan = plan_kit(proj, out)
     written = execute(plan, overwrite)
-    proj_file = out / f"{proj.name}.rvproj"
+    proj_file = out / f"{proj.title}.rvproj"
     if proj_file.exists() and not overwrite:
         raise FileExistsError(str(proj_file))
     proj.save(proj_file) if proj.path is None else proj.save(proj.path)

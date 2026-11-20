@@ -242,6 +242,7 @@ def load_fbx(path) -> Mesh:
             if p.props and p.props[0] == "UpAxis" and len(p.props) > 4:
                 up = int(p.props[4])
     V, N, U, F, off, have_n = [], [], [], [], 0, True
+    names, fparts = [], []
     for g in objs.all("Geometry"):
         r = _geometry_to_arrays(g)
         if r is None:
@@ -256,6 +257,10 @@ def load_fbx(path) -> Mesh:
             N.append(n)
         F.append(tris + off)
         off += len(v)
+        raw = str(g.props[1]) if len(g.props) > 1 else ""
+        nm = raw.split("\x00")[0].replace("Geometry::", "").strip() or f"часть {len(names) + 1}"
+        names.append(nm if nm not in names else f"{nm}.{len(names)}")
+        fparts.append(np.full(len(tris), len(names) - 1))
     if not V or not any(len(f) for f in F):
         raise FbxError("В FBX не найдено полигональной геометрии")
     v = np.vstack(V).astype(np.float32)
@@ -273,4 +278,7 @@ def load_fbx(path) -> Mesh:
         inv = inv.reshape(-1)
         v, uv, f = v[first], uv[first], inv[f]
         n = None
-    return Mesh(v, n, uv, f).finalize()
+    m = Mesh(v, n, uv, f).finalize()
+    if len(names) > 1:                              # каждый Geometry-объект — отдельная часть (селекшен)
+        m.set_parts(np.concatenate(fparts), names)
+    return m

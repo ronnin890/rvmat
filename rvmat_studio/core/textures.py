@@ -76,7 +76,7 @@ class TextureInfo:
 def load_rgba(path) -> tuple[np.ndarray, str]:
     p = Path(path)
     if p.suffix.lower() in GAME_EXT:
-        return read_paa(p.read_bytes())
+        return read_paa(p.read_bytes(), p.name)
     with Image.open(p) as im:
         fmt = im.format or p.suffix[1:].upper()
         return np.asarray(im.convert("RGBA")).copy(), fmt

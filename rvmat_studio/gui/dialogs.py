@@ -79,6 +79,9 @@ class TextureViewer(QDialog):
         n = normal_report(arr)
         lines.append(f"Проверка нормалей: средняя длина {n['mean_len']:.2f}, доля Z<0: {n['z_negative_ratio']:.1%}, "
                      f"средн. XY=({n['mean_xy'][0]:+.2f},{n['mean_xy'][1]:+.2f}) — применимо только к *_nohq")
+        if self.path.lower().endswith(".paa") and "_no" in Path(self.path).stem.lower():
+            lines.append("ℹ _nohq из PAA: применена обратная перестановка каналов (X нормали хранится инвертированным в альфе) — "
+                         "без неё нормаль выглядит голубой вместо сине-фиолетовой.")
         if self.other:
             lines.append(f"Сравнение с: {self.other}")
         self.info.setPlainText("\n".join(lines))

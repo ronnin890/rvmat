@@ -20,7 +20,7 @@ from ..core.render import DIFFERENCES, LIGHTING, make_resolver
 from ..core.settings import Settings
 from ..core.textures import ThumbCache, convert_to_paa, to_game_path
 from .dialogs import BatchDialog, ExportDialog, SettingsDialog, TextureViewer
-from .library import PresetsTab, StatesTab, TexturesTab
+from .library import PartsTab, PresetsTab, StatesTab, TexturesTab
 from .preview import GLPreviewWidget, PreviewWidget
 from .properties import PropertiesPanel
 
@@ -59,10 +59,12 @@ class MainWindow(QMainWindow):
         self.tab_tex = TexturesTab(self.proj, self.thumbs)
         self.tab_presets = PresetsTab(self.pm)
         self.tab_states = StatesTab(self.proj)
+        self.tab_parts = PartsTab(self.proj, lambda: self.preview._mesh())
         tabs = QTabWidget()
         tabs.addTab(self.tab_tex, "Текстуры")
         tabs.addTab(self.tab_presets, "Пресеты")
         tabs.addTab(self.tab_states, "Состояния")
+        tabs.addTab(self.tab_parts, "Части")
         self.left_tabs = tabs
         self.dock_lib = self._dock("Библиотека", tabs, Qt.LeftDockWidgetArea, "lib")
         self.dock_lib.setMinimumWidth(320)
@@ -154,8 +156,12 @@ class MainWindow(QMainWindow):
                 w = None
         if w is None:
             w = PreviewWidget()
-        w.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
+        self._connect_preview(w)
         return w
+
+    def _connect_preview(self, w):
+        w.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
+        w.part_picked.connect(lambda i: self.tab_parts.select_part(i))
 
     def _swap_to_cpu(self, reason=""):
         old = self.preview
@@ -163,7 +169,7 @@ class MainWindow(QMainWindow):
             return
         new = PreviewWidget()
         new.opts, new.mesh, new.hdri, new.show_uv, new.uv_bg = old.opts, old.mesh, old.hdri, old.show_uv, old.uv_bg
-        new.status.connect(lambda s: self.statusBar().showMessage(s, 5000))
+        self._connect_preview(new)
         lay = self.centralWidget().layout()
         lay.replaceWidget(old, new)
         QTimer.singleShot(0, old.deleteLater)
@@ -240,6 +246,8 @@ class MainWindow(QMainWindow):
         self.tab_presets.apply.connect(self.apply_preset)
         self.tab_presets.save_current.connect(self.save_as_preset)
         self.tab_states.selected.connect(self.panel.set_target)
+        self.tab_parts.part_selected.connect(self.on_part_selected)
+        self.c_shape.currentTextChanged.connect(lambda _t: (setattr(self.preview.opts, "highlight", -1), self.tab_parts.refresh()))
         self.tab_states.toggled.connect(lambda s, on: self.proj.set_enabled(State(s), on))
 
     # ------------------------------------------------------------ состояние
@@ -256,24 +264,51 @@ class MainWindow(QMainWindow):
         self.panel.proj = self.proj
         self.panel.refresh()
         self.tab_states.refresh()
+        self.tab_parts.refresh()
         self.tab_tex.reload()
         self.refresh_preview()
         self.histw.clear()
         self.histw.addItems(self.proj.history[-200:][::-1])
         self.a_undo.setEnabled(self.proj.can_undo)
         self.a_redo.setEnabled(self.proj.can_redo)
-        self.setWindowTitle(f"{'*' if self.proj.dirty else ''}{self.proj.name} — DayZ RVMAT Studio")
-        self.status_lbl.setText(f"{self.proj.name} · {len(self.proj.enabled)} файл(ов) в комплекте" + (" · не сохранён" if self.proj.dirty else ""))
+        multi = len(self.proj.slots) > 1
+        self.setWindowTitle(f"{'*' if self.proj.dirty else ''}{self.proj.title}{' / ' + self.proj.name if multi else ''} — DayZ RVMAT Studio")
+        self.status_lbl.setText(f"{self.proj.title} · материалов: {len(self.proj.slots)} · редактируется: {self.proj.name} · "
+                                f"{len(self.proj.enabled)} файл(ов) в комплекте на материал" + (" · не сохранён" if self.proj.dirty else ""))
         self._vtimer.start()
 
     def refresh_preview(self):
         st = self.panel.view_state()
         a = self.proj.effective(st)
-        b = self.proj.effective(State(self.c_cmp.currentData())) if self.k_cmp.isChecked() else None
+        cmp_state = State(self.c_cmp.currentData()) if self.k_cmp.isChecked() else None
+        b = self.proj.effective(cmp_state) if cmp_state else None
         s4 = a.stage(4)
         self.preview.uv_bg = self.resolver(self.proj.base_color) if self.proj.base_color else (self.resolver(s4.texture) if s4 and s4.texture else None)
         self.preview.opts.base_color = self.resolver(self.proj.base_color) if self.proj.base_color else None
-        self.preview.set_materials(a, b, self.resolver)
+        self.preview.set_materials(a, b, self.resolver, self._parts_mats(st), self._parts_mats(cmp_state) if cmp_state else None)
+
+    def _parts_mats(self, state):
+        """{индекс части: (материал, base_color)} для модели с селекшенами."""
+        mesh = self.preview._mesh()
+        if mesh.face_part is None:
+            return None
+        out = {}
+        for i, name in enumerate(mesh.part_names):
+            sl = self.proj.slot_for_part(name)
+            base = self.resolver(sl.base_color) if sl.base_color else None
+            out[i] = (self.proj.slot_effective(sl, state), base)
+        return out
+
+    def on_part_selected(self, idx: int):
+        """Выбрана часть: подсветить на модели и сделать её материал редактируемым."""
+        self.preview.opts.highlight = idx
+        mesh = self.preview._mesh()
+        if 0 <= idx < mesh.n_parts:
+            i = self.proj.slot_index(self.proj.slot_for_part(mesh.part_names[idx]).name)
+            if i != self.proj.active:
+                self.proj.set_active(i)
+                return
+        self.preview.request()
 
     def run_validation(self):
         issues = self.proj.validate()
@@ -291,9 +326,11 @@ class MainWindow(QMainWindow):
     def goto_issue(self, item, _=0):
         loc = item.text(3)
         fname, _, path = loc.partition(":")
-        for s in ALL_STATES:
-            if kit_filename(self.proj.name, s) == fname:
-                self.panel.set_target(s.value if s != State.BASE else TARGET_SHARED)
+        for i, sl in enumerate(self.proj.slots):
+            hit = next((s for s in ALL_STATES if kit_filename(sl.name, s) == fname), None)
+            if hit is not None:
+                self.proj.set_active(i)
+                self.panel.set_target(hit.value if hit != State.BASE else TARGET_SHARED)
                 break
         self.panel.goto(loc)
 
@@ -311,8 +348,13 @@ class MainWindow(QMainWindow):
         self.proj.listeners.clear()
         self.proj = p
         p.listeners.append(self.on_project_changed)
-        self.tab_tex.proj = self.tab_states.proj = self.proj
+        self.tab_tex.proj = self.tab_states.proj = self.tab_parts.proj = self.proj
         self.rebuild_resolver()
+        if p.model_path and Path(p.model_path).is_file():              # вернуть пользовательскую модель проекта
+            try:
+                self._load_model_file(p.model_path)
+            except Exception as e:
+                self.log(f"Модель проекта не загружена: {e}")
         self.on_project_changed()
 
     def new_project(self):
@@ -337,7 +379,7 @@ class MainWindow(QMainWindow):
     def save_project(self, as_new=False) -> bool:
         path = self.proj.path
         if as_new or not path:
-            f, _ = QFileDialog.getSaveFileName(self, "Сохранить проект", f"{self.proj.name}.rvproj", "Проект RVMAT Studio (*.rvproj)")
+            f, _ = QFileDialog.getSaveFileName(self, "Сохранить проект", f"{self.proj.title}.rvproj", "Проект RVMAT Studio (*.rvproj)")
             if not f:
                 return False
             path = Path(f)
@@ -536,6 +578,16 @@ class MainWindow(QMainWindow):
             self.log(f"Пресет «{n}» сохранён")
 
     # ------------------------------------------------------------ предпросмотр
+    def _load_model_file(self, f: str):
+        ext = Path(f).suffix.lower()
+        self.preview.mesh = load_fbx(f) if ext == ".fbx" else load_obj(f)
+        self.c_shape.blockSignals(True)
+        self.c_shape.setCurrentText("Своя модель")
+        self.c_shape.blockSignals(False)
+        self.preview.opts.shape = "Своя модель"
+        self.preview.opts.highlight = -1
+        return self.preview.mesh
+
     def import_obj(self):
         f, _ = QFileDialog.getOpenFileName(self, "Модель", self.settings.last_dir, "Модели (*.obj *.fbx *.p3d)")
         if not f:
@@ -545,11 +597,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Модель", "Поддерживаются OBJ и FBX. P3D (формат BI) напрямую не читается — экспортируйте модель в FBX/OBJ.")
             return
         try:
-            self.preview.mesh = load_fbx(f) if ext == ".fbx" else load_obj(f)
-            self.c_shape.setCurrentText("Своя модель")
-            self.preview.opts.shape = "Своя модель"
-            self.preview.request()
-            self.log(f"Загружена модель {Path(f).name}: {len(self.preview.mesh.f)} треуг.")
+            mesh = self._load_model_file(f)
+            self.proj.model_path = f
+            self.proj.dirty = True
+            self.on_project_changed()
+            names = mesh.part_names or []
+            self.log(f"Загружена модель {Path(f).name}: {len(mesh.f)} треуг., частей: {len(names)}" + (f" ({', '.join(names[:6])}{'…' if len(names) > 6 else ''})" if names else ""))
         except Exception as e:
             QMessageBox.warning(self, "Модель", f"Не удалось загрузить: {e}")
 

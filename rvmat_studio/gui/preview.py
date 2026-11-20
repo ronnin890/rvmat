@@ -55,8 +55,27 @@ class _CameraMixin:
         self.request(True)
 
     def mouseReleaseEvent(self, e):
-        self._drag = None
+        d, self._drag = self._drag, None
+        if d is not None and d[1] == Qt.LeftButton and (e.position() - d[0]).manhattanLength() < 4:
+            self.pick_at(e.position().x(), e.position().y())      # клик без перетаскивания — выбор части
         self.request()
+
+    def pick_at(self, x: float, y: float) -> int:
+        """Часть (селекшен) под курсором: индекс или -1. Эмитит part_picked."""
+        import copy
+        from ..core.render import pick_part
+        mesh = self._mesh()
+        if mesh.face_part is None:
+            return -1
+        W, H = self.width(), self.height()
+        if self.mat_b is not None:                              # сравнение: две половины одной сцены
+            W = W // 2
+            x = x % max(W, 1)
+        o = copy.copy(self.opts)
+        W2, H2 = max(W // 2, 32), max(H // 2, 32)                # для скорости — на половинном разрешении
+        part = pick_part(mesh, o, W2, H2, x * W2 / max(W, 1), y * H2 / max(H, 1))
+        self.part_picked.emit(part)
+        return part
 
     def wheelEvent(self, e):
         self.opts.zoom = max(0.2, min(6, self.opts.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1)))
@@ -72,12 +91,14 @@ class _CameraMixin:
 
 class PreviewWidget(_CameraMixin, QWidget):
     status = Signal(str)
+    part_picked = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(320, 320)
         self.opts = RenderOptions()
         self.mat_a = self.mat_b = None
+        self.parts_a = self.parts_b = None     # {индекс части: (Material, base_color)}
         self.resolver = None
         self.mesh: Mesh | None = None        # пользовательская модель (OBJ)
         self.hdri = None
@@ -100,8 +121,9 @@ class PreviewWidget(_CameraMixin, QWidget):
         self.setMouseTracking(True)
 
     # --- API
-    def set_materials(self, a, b=None, resolver=None):
+    def set_materials(self, a, b=None, resolver=None, parts_a=None, parts_b=None):
         self.mat_a, self.mat_b = a, b
+        self.parts_a, self.parts_b = parts_a, parts_b
         if resolver:
             self.resolver = resolver
         self.request()
@@ -136,15 +158,16 @@ class PreviewWidget(_CameraMixin, QWidget):
         o.ssaa = 2 if (self._quality and not fast) else 1
         cache = self._cache
         a, b, res, mesh, show_uv = self.mat_a, self.mat_b, self.resolver, self._mesh(), self.show_uv
+        pa, pb = self.parts_a, self.parts_b
         uv_bg = self.uv_bg
         side = min(o.width, o.height)
 
         def work():
             if show_uv:
                 return render_uv_layout(mesh, 512, uv_bg)
-            ia = render(a, o, res, mesh, cache)
+            ia = render(a, o, res, mesh, cache, pa)
             if b is not None:
-                ib = render(b, o, res, mesh, cache)
+                ib = render(b, o, res, mesh, cache, pb)
                 return np.concatenate([ia, ib], axis=1)
             return ia
         job = _Job(self._gen, work, self._sig)
@@ -185,7 +208,7 @@ class PreviewWidget(_CameraMixin, QWidget):
         """Синхронный рендер (для тестов/скриншотов)."""
         o = self._opts_copy()
         o.width, o.height = max(self.width(), 64), max(self.height(), 64)
-        return render(self.mat_a, o, self.resolver, self._mesh(), RenderCache())
+        return render(self.mat_a, o, self.resolver, self._mesh(), RenderCache(), self.parts_a)
 
     # --- события
     def paintEvent(self, _):
@@ -229,6 +252,7 @@ def close_offscreen():
 class GLPreviewWidget(_CameraMixin, QOpenGLWidget):
     """Предпросмотр на видеокарте (GLSL 3.30). Тот же интерфейс, что у PreviewWidget."""
     status = Signal(str)
+    part_picked = Signal(int)
     gl_failed = Signal(str)
     backend = "gl"
 
@@ -239,6 +263,7 @@ class GLPreviewWidget(_CameraMixin, QOpenGLWidget):
         self.setMinimumSize(320, 320)
         self.opts = RenderOptions()
         self.mat_a = self.mat_b = None
+        self.parts_a = self.parts_b = None
         self.resolver = None
         self.mesh = None
         self.hdri = None
@@ -279,10 +304,10 @@ class GLPreviewWidget(_CameraMixin, QOpenGLWidget):
             o = self.opts
             if self.mat_b is not None:
                 half = W // 2
-                self.scene.draw(self.mat_a, o, self.resolver, self._mesh(), (0, 0, half, H), self.hdri)
-                self.scene.draw(self.mat_b, o, self.resolver, self._mesh(), (half, 0, W - half, H), self.hdri)
+                self.scene.draw(self.mat_a, o, self.resolver, self._mesh(), (0, 0, half, H), self.hdri, self.parts_a)
+                self.scene.draw(self.mat_b, o, self.resolver, self._mesh(), (half, 0, W - half, H), self.hdri, self.parts_b)
             else:
-                self.scene.draw(self.mat_a, o, self.resolver, self._mesh(), (0, 0, W, H), self.hdri)
+                self.scene.draw(self.mat_a, o, self.resolver, self._mesh(), (0, 0, W, H), self.hdri, self.parts_a)
             self._painted = True
         except Exception as e:
             self.status.emit(f"Ошибка OpenGL-рендера: {e}")
@@ -299,8 +324,9 @@ class GLPreviewWidget(_CameraMixin, QOpenGLWidget):
         self._painted = True
 
     # --- API (как у PreviewWidget)
-    def set_materials(self, a, b=None, resolver=None):
+    def set_materials(self, a, b=None, resolver=None, parts_a=None, parts_b=None):
         self.mat_a, self.mat_b = a, b
+        self.parts_a, self.parts_b = parts_a, parts_b
         if resolver:
             self.resolver = resolver
         self.update()
@@ -318,7 +344,7 @@ class GLPreviewWidget(_CameraMixin, QOpenGLWidget):
         o = RenderOptions(**{k: getattr(self.opts, k) for k in self.opts.__dataclass_fields__})
         o.stages_on = dict(self.opts.stages_on)
         o.width, o.height = max(self.width(), 64), max(self.height(), 64)
-        return offscreen_gl().render(self.mat_a, o, self.resolver, self._mesh(), self.hdri)
+        return offscreen_gl().render(self.mat_a, o, self.resolver, self._mesh(), self.hdri, parts=self.parts_a)
 
     def shutdown(self):
         try:

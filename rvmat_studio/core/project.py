@@ -14,20 +14,55 @@ from .settings import app_dir
 
 TARGET_SHARED = "shared"
 TARGET_DECOR = "decorative"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+
+
+class Slot:
+    """Один материал проекта (комплект RVMAT) — назначается частям (селекшенам) модели."""
+
+    def __init__(self, name: str, material: Optional[Material] = None):
+        self.spec = KitSpec(name, material or super_template())
+        self.baseline = self.spec.shared.clone()     # для «сброса» общих параметров
+        self.base_color = ""                          # физический файл _co для предпросмотра (в RVMAT НЕ пишется)
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "rvmat": self.spec.shared.to_text(), "decorative": self.spec.decorative,
+                "overrides": {s.value: v for s, v in self.spec.overrides.items() if v}, "base_color": self.base_color}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Slot":
+        sl = cls(d["name"], Material.from_text(d["rvmat"]))
+        sl.spec.decorative = d.get("decorative", {})
+        sl.spec.overrides = {State(k): v for k, v in d.get("overrides", {}).items()}
+        sl.base_color = d.get("base_color", "")
+        sl.baseline = sl.spec.shared.clone()
+        return sl
+
+
+def _safe_name(n: str) -> str:
+    import re
+    n = re.sub(r"[^\w\-.]+", "_", n.strip(), flags=re.UNICODE).strip("._")
+    if not n:
+        raise ValueError("Пустое имя материала")
+    return n
 
 
 class Project:
     def __init__(self, name="newmaterial", material: Optional[Material] = None):
-        self.name = name
-        self.spec = KitSpec(name, material or super_template())
+        self.title = name                # имя проекта (файл .rvproj, заголовок окна)
+        self.slots: list[Slot] = [Slot(name, material)]
+        self.active = 0                  # редактируемый материал
+        self.part_map: dict[str, str] = {}   # часть (селекшен) модели -> имя материала; нет записи = первый материал
+        self.model_path = ""             # пользовательская модель для предпросмотра
         self.enabled: set[State] = set(ALL_STATES)
         self.project_root = ""           # P:\ или корень проекта: для проверки/пересчёта путей
         self.export_dir = ""
         self.textures: list[str] = []    # библиотека текстур (физические пути)
         self.tex_map: dict[str, str] = {}   # игровой путь -> физический файл (вне корня проекта)
-        self.base_color = ""             # физический файл _co для предпросмотра (в RVMAT НЕ пишется)
-        self.baseline = self.spec.shared.clone()   # для «сброса» общих параметров
         self._last_change = ("", 0.0)
         self.path: Optional[Path] = None
         self.dirty = False
@@ -36,25 +71,66 @@ class Project:
         self.history: list[str] = []
         self.listeners: list = []
 
+    # --- активный материал (совместимый API: proj.spec / proj.name / proj.baseline / proj.base_color)
+    @property
+    def slot(self) -> Slot:
+        return self.slots[self.active]
+
+    @property
+    def spec(self) -> KitSpec:
+        return self.slot.spec
+
+    @spec.setter
+    def spec(self, v):
+        self.slot.spec = v
+
+    @property
+    def name(self) -> str:
+        return self.slot.spec.name
+
+    @name.setter
+    def name(self, v):
+        self.slot.spec.name = v
+
+    @property
+    def baseline(self) -> Material:
+        return self.slot.baseline
+
+    @baseline.setter
+    def baseline(self, v):
+        self.slot.baseline = v
+
+    @property
+    def base_color(self) -> str:
+        return self.slot.base_color
+
+    @base_color.setter
+    def base_color(self, v):
+        self.slot.base_color = v
+
     # --- сериализация
     def to_dict(self) -> dict:
-        return {"version": FORMAT_VERSION, "name": self.name, "rvmat": self.spec.shared.to_text(),
-                "decorative": self.spec.decorative,
-                "overrides": {s.value: v for s, v in self.spec.overrides.items() if v},
+        return {"version": FORMAT_VERSION, "title": self.title, "slots": [s.to_dict() for s in self.slots],
+                "active": self.active, "part_map": self.part_map, "model_path": self.model_path,
                 "enabled": sorted(s.value for s in self.enabled), "project_root": self.project_root,
-                "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map, "base_color": self.base_color}
+                "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Project":
-        p = cls(d["name"], Material.from_text(d["rvmat"]))
-        p.spec.decorative = d.get("decorative", {})
-        p.spec.overrides = {State(k): v for k, v in d.get("overrides", {}).items()}
+        if "slots" in d:
+            p = cls(d.get("title", "newmaterial"))
+            p.slots = [Slot.from_dict(x) for x in d["slots"]]
+            p.active = min(int(d.get("active", 0)), len(p.slots) - 1)
+            p.part_map = dict(d.get("part_map", {}))
+            p.model_path = d.get("model_path", "")
+        else:                                           # формат v1: один материал
+            p = cls(d["name"], Material.from_text(d["rvmat"]))
+            p.slots = [Slot.from_dict({"name": d["name"], "rvmat": d["rvmat"], "decorative": d.get("decorative", {}),
+                                       "overrides": d.get("overrides", {}), "base_color": d.get("base_color", "")})]
         p.enabled = {State(s) for s in d.get("enabled", [s.value for s in ALL_STATES])}
         p.project_root, p.export_dir = d.get("project_root", ""), d.get("export_dir", "")
         p.textures = d.get("textures", [])
         p.tex_map = d.get("tex_map", {})
-        p.base_color = d.get("base_color", "")
-        p.baseline = p.spec.shared.clone()
         return p
 
     def _snap(self) -> str:
@@ -63,10 +139,10 @@ class Project:
     def _restore(self, s: str):
         d = json.loads(s)
         np_ = Project.from_dict(d)
-        self.name, self.spec, self.enabled = np_.name, np_.spec, np_.enabled
+        self.title, self.slots, self.active, self.part_map = np_.title, np_.slots, np_.active, np_.part_map
+        self.model_path, self.enabled = np_.model_path, np_.enabled
         self.project_root, self.export_dir, self.textures = np_.project_root, np_.export_dir, np_.textures
         self.tex_map = np_.tex_map
-        self.base_color = np_.base_color
 
     def save(self, path=None):
         path = Path(path or self.path)
@@ -87,7 +163,7 @@ class Project:
     def autosave_path(self) -> Path:
         d = app_dir() / "recovery"
         d.mkdir(exist_ok=True)
-        return d / f"{self.name}.autosave.rvproj"
+        return d / f"{self.title}.autosave.rvproj"
 
     def autosave(self):
         if self.dirty:
@@ -155,9 +231,69 @@ class Project:
         self._notify()
 
     def rename(self, name: str):
-        self._change(f"Имя проекта → {name}")
-        self.name = self.spec.name = name
+        """Переименовать активный материал (меняются имена его файлов)."""
+        name = _safe_name(name)
+        if any(i != self.active and sl.name == name for i, sl in enumerate(self.slots)):
+            raise ValueError(f"Материал «{name}» уже существует")
+        self._change(f"Имя материала → {name}")
+        old = self.slot.name
+        self.slot.spec.name = name
+        self.part_map = {k: (name if v == old else v) for k, v in self.part_map.items()}
+        if len(self.slots) == 1:
+            self.title = name
         self._notify()
+
+    # --- материалы (слоты) и части (селекшены)
+    def slot_index(self, name: str) -> int:
+        return next((i for i, s in enumerate(self.slots) if s.name == name), -1)
+
+    def set_active(self, i: int):
+        if 0 <= i < len(self.slots) and i != self.active:
+            self.active = i
+            self._notify()
+
+    def add_slot(self, name: str, copy_from: Optional[int] = None) -> int:
+        name = _safe_name(name)
+        if self.slot_index(name) >= 0:
+            raise ValueError(f"Материал «{name}» уже существует")
+        self._change(f"Новый материал: {name}")
+        if copy_from is None:
+            sl = Slot(name)
+        else:
+            src = self.slots[copy_from]
+            sl = Slot.from_dict({**src.to_dict(), "name": name})
+        self.slots.append(sl)
+        self.active = len(self.slots) - 1
+        self._notify()
+        return self.active
+
+    def remove_slot(self, i: int):
+        if len(self.slots) <= 1:
+            raise ValueError("Нельзя удалить единственный материал")
+        name = self.slots[i].name
+        self._change(f"Удалён материал: {name}")
+        del self.slots[i]
+        self.part_map = {k: v for k, v in self.part_map.items() if v != name}
+        self.active = min(self.active, len(self.slots) - 1)
+        self._notify()
+
+    def assign_part(self, part: str, slot_name: Optional[str]):
+        """Назначить материал части (None — вернуть на основной материал)."""
+        if slot_name is not None and self.slot_index(slot_name) < 0:
+            raise KeyError(slot_name)
+        self._change(f"Часть «{part}» → {slot_name or 'основной'}")
+        if slot_name is None or slot_name == self.slots[0].name:
+            self.part_map.pop(part, None)
+        else:
+            self.part_map[part] = slot_name
+        self._notify()
+
+    def slot_for_part(self, part: str) -> Slot:
+        i = self.slot_index(self.part_map.get(part, ""))
+        return self.slots[i if i >= 0 else 0]
+
+    def slot_effective(self, slot: Slot, state: State) -> Material:
+        return slot.spec.render(state)
 
     def set_value(self, target: str, path: str, value: Any, label: str = ""):
         """target: 'shared' | 'decorative' | значение State."""
@@ -206,8 +342,19 @@ class Project:
     def effective(self, state: State) -> Material:
         return self.spec.render(state)
 
+    def slot_kit(self, slot: Slot) -> dict[str, Material]:
+        return slot.spec.render_all([s for s in ALL_STATES if s in self.enabled])
+
     def kit(self) -> dict[str, Material]:
-        return self.spec.render_all([s for s in ALL_STATES if s in self.enabled])
+        """Комплект активного материала."""
+        return self.slot_kit(self.slot)
+
+    def kit_all(self) -> dict[str, Material]:
+        """Комплекты всех материалов проекта."""
+        out: dict[str, Material] = {}
+        for sl in self.slots:
+            out.update(self.slot_kit(sl))
+        return out
 
     def set_enabled(self, state: State, on: bool):
         self._change(f"{'Включено' if on else 'Отключено'}: {state.value}")
@@ -216,7 +363,10 @@ class Project:
 
     def validate(self):
         root = Path(self.project_root) if self.project_root else None
-        return validate_kit(self.kit(), self.name, [s for s in ALL_STATES if s in self.enabled], root)
+        out = []
+        for sl in self.slots:
+            out += validate_kit(self.slot_kit(sl), sl.name, [s for s in ALL_STATES if s in self.enabled], root)
+        return sorted(out, key=lambda i: -i.severity)
 
     def copy_stage(self, src_state: State, dst_state: State, stage: int):
         """Скопировать текстуру/настройки стадии одного состояния в другое (как переопределения)."""

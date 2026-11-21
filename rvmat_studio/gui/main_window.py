@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
 
         # центральная область
         self.preview = self._make_preview()
+        self.preview.opts.env_gain = self.settings.env_gain
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -118,13 +119,16 @@ class MainWindow(QMainWindow):
             self.c_view.addItem(t, val)
         self.sp_tile = QDoubleSpinBox(); self.sp_tile.setRange(0.1, 32); self.sp_tile.setValue(1); self.sp_tile.setPrefix("Повтор ×"); self.sp_tile.setSingleStep(0.5)
         self.sl_light = QDoubleSpinBox(); self.sl_light.setRange(-180, 180); self.sl_light.setPrefix("Свет ∠"); self.sl_light.setSuffix("°")
+        self.sp_env = QDoubleSpinBox(); self.sp_env.setRange(0, 8); self.sp_env.setSingleStep(0.25); self.sp_env.setDecimals(2)
+        self.sp_env.setPrefix("Отражения ×"); self.sp_env.setValue(self.settings.env_gain)
+        self.sp_env.setToolTip("Калибровка превью: сила отражения окружения на блестящих участках.\nОкружение движка DayZ здесь заменено простым небом, поэтому подберите значение по виду в игре.")
         self.k_wire = QCheckBox("Сетка"); self.k_grid = QCheckBox("Решётка"); self.k_uv = QCheckBox("UV-развёртка")
         self.k_cmp = QCheckBox("Сравнить с:")
         self.c_cmp = QComboBox()
         for s in ALL_STATES:
             self.c_cmp.addItem(s.value, s.value)
         self.c_cmp.setCurrentIndex(1)
-        for w_ in (QLabel("Модель"), self.c_shape, QLabel("Свет"), self.c_light, QLabel("Вид"), self.c_view, self.sp_tile, self.sl_light):
+        for w_ in (QLabel("Модель"), self.c_shape, QLabel("Свет"), self.c_light, QLabel("Вид"), self.c_view, self.sp_tile, self.sl_light, self.sp_env):
             r1.addWidget(w_)
         r1.addStretch()
         b_obj = QPushButton("Модель…"); b_obj.setToolTip("Импорт модели: OBJ или FBX (P3D — сначала конвертируйте в OBJ/FBX)")
@@ -231,6 +235,7 @@ class MainWindow(QMainWindow):
         self.c_view.currentIndexChanged.connect(lambda: (setattr(self.preview.opts, "view", self.c_view.currentData()), self.preview.request()))
         self.sp_tile.valueChanged.connect(lambda x: (setattr(self.preview.opts, "tiling", x), self.preview.request()))
         self.sl_light.valueChanged.connect(lambda x: (setattr(self.preview.opts, "light_rot", x), self.preview.request()))
+        self.sp_env.valueChanged.connect(lambda x: (setattr(self.preview.opts, "env_gain", x), setattr(self.settings, "env_gain", x), self.preview.request()))
         self.k_wire.toggled.connect(lambda x: (setattr(self.preview.opts, "wire", x), self.preview.request()))
         self.k_grid.toggled.connect(lambda x: (setattr(self.preview.opts, "grid", x), self.preview.request()))
         self.k_uv.toggled.connect(lambda x: (setattr(self.preview, "show_uv", x), self.preview.request()))

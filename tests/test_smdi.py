@@ -95,3 +95,48 @@ def test_gl_matches_cpu_for_new_smdi_and_as(tmp_path):
             assert mad(g.render(m, o, res, samples=0), render(m, o, res)) < 6.0, view
     finally:
         g.close()
+
+
+# ------------------------------------------------------------------ отражения и сохранение энергии
+def test_glossy_metal_surface_is_bright_reflection_not_albedo(tmp_path):
+    """Блестящая поверхность (G высокий) со «скучным» тёмным альбедо выглядит светлее за счёт отражения окружения;
+    матовая (G низкий) остаётся тёмной."""
+    base = np.tile(np.array([40, 40, 40, 255], np.float32) / 255, (8, 8, 1))
+    shiny, rs = scene(tmp_path, smdi=[255, 240, 140, 255], power=40)
+    matte, rm = scene(tmp_path, smdi=[255, 20, 140, 255], power=40)
+    o = dict(width=160, height=160, base_color=base)
+    a, b = render(shiny, RenderOptions(**o), rs), render(matte, RenderOptions(**o), rm)
+    assert a[..., :3].mean() > b[..., :3].mean() + 5
+
+
+def test_env_gain_scales_reflections_only_on_specular_areas(tmp_path):
+    shiny, rs = scene(tmp_path, smdi=[255, 240, 140, 255])
+    matte, rm = scene(tmp_path, smdi=[255, 0, 140, 255])
+    lo, hi = dict(width=160, height=160, env_gain=0.0), dict(width=160, height=160, env_gain=4.0)
+    assert mad(render(shiny, RenderOptions(**lo), rs), render(shiny, RenderOptions(**hi), rs)) > 3.0
+    assert mad(render(matte, RenderOptions(**lo), rm), render(matte, RenderOptions(**hi), rm)) < 0.5      # G=0 → отражения нет
+
+
+def test_rough_gloss_blurs_reflection(tmp_path):
+    """Низкий B (шероховатость) даёт менее контрастное отражение, чем высокий."""
+    sharp, r1 = scene(tmp_path, smdi=[255, 240, 255, 255])
+    rough, r2 = scene(tmp_path, smdi=[255, 240, 30, 255])
+    base = np.tile(np.array([30, 30, 30, 255], np.float32) / 255, (8, 8, 1))
+    a = render(sharp, RenderOptions(width=160, height=160, base_color=base, env_gain=3.0, pitch=-60), r1)
+    b = render(rough, RenderOptions(width=160, height=160, base_color=base, env_gain=3.0, pitch=-60), r2)
+    assert mad(a, b) > 1.0
+
+
+def test_gl_matches_cpu_with_env_gain(tmp_path):
+    from rvmat_studio.core import gl_render as G
+    QApplication.instance() or QApplication([])
+    if not G.gl_available():
+        pytest.skip("OpenGL недоступен")
+    m, res = scene(tmp_path, smdi=[255, 220, 100, 255], as_=[255, 120, 255, 255], power=50)
+    g = G.GLOffscreen()
+    try:
+        for gain in (0.0, 1.0, 4.0):
+            o = RenderOptions(width=160, height=160, env_gain=gain)
+            assert mad(g.render(m, o, res, samples=0), render(m, o, res)) < 6.0, gain
+    finally:
+        g.close()

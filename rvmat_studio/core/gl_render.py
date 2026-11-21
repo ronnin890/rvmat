@@ -47,7 +47,7 @@ out vec4 frag;
 uniform sampler2D tNormal, tDetail, tAs, tSmdi, tHdri, tBase;
 uniform int hasN, hasD, hasA, hasS, hasH, hasB, detailMode;
 uniform vec4 mN, mD, mA, mS; uniform vec2 oN, oD, oA, oS;     // uv' = [m.x m.y; m.z m.w]*uv + off
-uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn, nStr;
+uniform float tiling, dist, power, ambK, sunI, fresN, fresK, lightOn, nStr, envGain;
 uniform vec3 amb, dif, forced, emi, spc, detailConst, sunDir, sunCol, skyTop, skyHor, skyGnd;
 uniform int view; uniform float hl;
 vec2 tx(vec4 m, vec2 o, vec2 uv){ return vec2(m.x*uv.x + m.y*uv.y, m.z*uv.x + m.w*uv.y) + o; }
@@ -106,12 +106,15 @@ void main(){
     float fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
     vec3 R = 2.0 * dot(Nf, V) * Nf - V;
     vec3 envc = envColor(R), ambEnv = envColor(Nf);
-    vec3 kd = albedo * detail * (1.0 - metal);
+    float spcMean = (spc.r + spc.g + spc.b) / 3.0;
+    float reflAmt = clamp(fres * specI * spcMean, 0.0, 1.0);
+    vec3 kd = albedo * detail * (1.0 - metal) * (1.0 - 0.7 * reflAmt);
     vec3 diffuseT = kd * (amb * ambEnv * ambK * 2.0 * ao + dif * lam * sunC + forced);
     vec3 specCol = spc * (1.0 - metal) + albedo * metal;
     vec3 specT = specCol * pow(nh, spExp) * lam * sunC * specI * (spExp + 8.0) / 25.0;
-    float spcMean = (spc.r + spc.g + spc.b) / 3.0;
-    vec3 reflT = ao * envc * specCol * fres * (specI * (0.25 + 0.75 * gloss)) * spcMean;
+    float wEnv = 0.3 + 0.7 * gloss;
+    vec3 envEff = envc * wEnv + ambEnv * (1.0 - wEnv);
+    vec3 reflT = ao * envEff * specCol * fres * (specI * (0.25 + 0.75 * gloss)) * envGain;
     vec3 emis = emi + albedo * glow;
     vec3 lin = diffuseT + specT + reflT + emis;
     if (view == 1 || view == 8) lin = albedo;
@@ -364,6 +367,7 @@ class GLScene:
             _set(p, "view", views.get(o.view, 0))
             _set(p, "hl", float(hl))
             _set(p, "nStr", float(nstr))
+            _set(p, "envGain", float(o.env_gain))
 
         default_base = getattr(o, "base_color", None)
         self.vao.bind()
@@ -438,9 +442,14 @@ class GLOffscreen:
         return arr.reshape(img.height(), img.width(), 4).copy()
 
     def close(self):
+        """Освободить GL-ресурсы сразу (не оставлять контекст сборщику мусора до выхода из QApplication)."""
+        if self.ctx is None:
+            return
         self.ctx.makeCurrent(self.surface)
         self.scene.destroy()
         self.ctx.doneCurrent()
+        self.surface.destroy()
+        self.scene = self.surface = self.ctx = None
 
 
 _avail = None

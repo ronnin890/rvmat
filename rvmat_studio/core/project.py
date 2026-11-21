@@ -183,11 +183,12 @@ class Project:
     # --- изменения (все через _change для undo)
     def _change(self, label: str):
         now = time.monotonic()
-        if label == self._last_change[0] and now - self._last_change[1] < 1.0 and self._undo:
-            self._last_change = (label, now)          # слияние серии правок (перетаскивание ползунка)
+        key = (label, self.active)                    # серия правок сливается только внутри ОДНОГО материала
+        if key == self._last_change[0] and now - self._last_change[1] < 1.0 and self._undo:
+            self._last_change = (key, now)            # слияние серии правок (перетаскивание ползунка)
             self.dirty = True
             return
-        self._last_change = (label, now)
+        self._last_change = (key, now)
         self._undo.append((label, self._snap()))
         del self._undo[:-200]
         self._redo.clear()
@@ -259,6 +260,7 @@ class Project:
     def set_active(self, i: int):
         if 0 <= i < len(self.slots) and i != self.active:
             self.active = i
+            self._last_change = ("", 0.0)             # смена материала обрывает серию правок
             self._notify()
 
     def add_slot(self, name: str, copy_from: Optional[int] = None) -> int:

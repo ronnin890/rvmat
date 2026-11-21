@@ -177,6 +177,23 @@ def to_game_path(physical: Path, root: Path, ext: str = ".paa") -> str:
     return str(rel.with_suffix(ext)).replace("/", "\\")
 
 
+def unique_game_path(phys: Path, tex_map: dict) -> str:
+    """Игровой путь для файла ВНЕ корня проекта: короткое имя, а при совпадении с другим файлом —
+    с добавлением имён родительских папок (plate\\x_as.paa), чтобы два материала не делили одно имя
+    и не подменяли текстуры друг друга."""
+    phys = Path(phys)
+    name = phys.with_suffix(".paa").name
+    parents = [p for p in reversed(phys.parent.parts) if p not in ("/", "\\") and not p.endswith(":\\") and not p.endswith(":")]
+    cand, depth = name, 0
+    while cand.lower() in tex_map and Path(tex_map[cand.lower()]) != phys:
+        depth += 1
+        if depth <= len(parents):
+            cand = "\\".join(reversed(parents[:depth])) + "\\" + name
+        else:                                                   # экзотика: одинаковые пути — нумерация
+            cand = f"{depth - len(parents)}_{name}"
+    return cand
+
+
 def convert_to_paa(src: Path, image_to_paa: Path, out: Optional[Path] = None) -> Path:
     """Вызов ImageToPAA.exe из DayZ Tools. Требует Windows + установленные DayZ Tools."""
     out = out or src.with_suffix(".paa")

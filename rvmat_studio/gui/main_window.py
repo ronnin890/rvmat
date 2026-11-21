@@ -18,7 +18,7 @@ from ..core.presets import CATEGORIES, PresetManager
 from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
 from ..core.render import DIFFERENCES, LIGHTING, make_resolver
 from ..core.settings import Settings
-from ..core.textures import ThumbCache, convert_to_paa, to_game_path
+from ..core.textures import ThumbCache, convert_to_paa, to_game_path, unique_game_path
 from .dialogs import BatchDialog, ExportDialog, SettingsDialog, TextureViewer
 from .library import PartsTab, PresetsTab, StatesTab, TexturesTab
 from .preview import GLPreviewWidget, PreviewWidget
@@ -491,9 +491,12 @@ class MainWindow(QMainWindow):
             except ValueError:
                 game = None
         if game is None:
-            game = phys.with_suffix(".paa").name
+            game = unique_game_path(phys, self.proj.tex_map)
             self.proj.tex_map[game.lower()] = str(phys)
-            self.log(f"Файл вне корня проекта — в RVMAT записано «{game}». Укажите корень проекта (Инструменты → Корень проекта), чтобы получить полный игровой путь.")
+            short = phys.with_suffix(".paa").name
+            self.log(f"Файл вне корня проекта — в RVMAT записано «{game}»"
+                     + (f" (имя «{short}» уже занято другим файлом)" if game != short else "")
+                     + ". Укажите корень проекта (Инструменты → Корень проекта), чтобы получить полный игровой путь.")
         else:
             self.proj.tex_map[game.lower()] = str(phys)
         if str(phys) not in self.proj.textures:

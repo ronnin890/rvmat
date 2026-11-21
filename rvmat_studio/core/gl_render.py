@@ -227,12 +227,16 @@ class GLScene:
     def texture(self, arr: np.ndarray) -> QOpenGLTexture:
         k = id(arr)
         if k not in self.tex:
-            if len(self.tex) > 48:
-                for t, _ in self.tex.values():
-                    t.destroy()
-                self.tex.clear()
             self.tex[k] = (self._texture(arr), arr)
         return self.tex[k][0]
+
+    def trim_textures(self, limit: int = 64):
+        """Сбросить кэш текстур. Вызывается ТОЛЬКО в начале кадра: сброс посреди отрисовки
+        удалил бы уже привязанные текстуры."""
+        if len(self.tex) > limit:
+            for t, _ in self.tex.values():
+                t.destroy()
+            self.tex.clear()
 
     def set_mesh(self, mesh: Mesh):
         if self.mesh_key == id(mesh):
@@ -275,6 +279,7 @@ class GLScene:
         f = self.f
         x, y, w, h = vp
         f.glViewport(x, y, w, h)
+        self.trim_textures()
         self.set_mesh(mesh)
         L = LIGHTING.get(o.lighting, LIGHTING["Студия"])
         f.glDisable(GL_DEPTH_TEST)

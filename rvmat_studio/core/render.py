@@ -59,7 +59,7 @@ class RenderOptions:
     wire: bool = False
     grid: bool = False
     ssaa: int = 1
-    env_gain: float = 2.5        # сила отражений окружения (калибровка под вид игры; не параметр RVMAT)
+    env_gain: float = 1.0        # сила отражений окружения (калибровка под вид игры; не параметр RVMAT)
     highlight: int = -1          # индекс части (селекшена) для подсветки
     normal_strength: float = 1.0   # только предпросмотр: усиление нормали (в RVMAT такого параметра нет)
     base_color: object = None   # RGBA float32 [0..1]: _co с текстуры грани модели (в RVMAT его НЕТ)
@@ -414,15 +414,20 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     envc = env_color(refl, L, hdri).astype(f32)
     amb_env = env_color(nrm_f, L, hdri).astype(f32)
 
-    spc_mean = f32(spc[:3].mean())
-    refl_amt = np.clip(fres[:, 0] * spec_i * spc_mean, 0, 1)                 # доля света, ушедшая в отражение
-    kd = albedo * detail * (1 - metal[:, None]) * (1 - f32(0.7) * refl_amt)[:, None]   # сохранение энергии: блестящее — меньше диффуза
-    diffuse_term = kd * (amb[:3] * amb_env * f32(L["amb"] * 2) * ao + dif[:3] * lam * sun_c + forced[:3])
-    spec_col = spc[:3] * (1 - metal[:, None]) + albedo * metal[:, None]
-    spec_term = spec_col * (nh ** sp_exp)[:, None] * lam * sun_c * spec_i[:, None] * (sp_exp[:, None] + 8) / 25
+    # Формулы приближены к воссозданию шейдера Super (rv103/RwG-DayZ-SP-Shader; авторские замеры, не проверены):
+    #   ks = specG·F;  блик = specular·NdotH^(specularPower·B)·specularScale(p)·ks;  direct-diffuse·(1−ks);
+    #   ambient не ослабляется Fresnel, AO действует как ao·0.5+0.5.  Блик НЕ нормируется: шероховатое = широкий яркий налёт.
+    ks = np.clip(fres[:, 0] * spec_i, 0, 1)
+    scale = f32(min(0.10986 * power + 0.0254, 24.05))
+    terminator = np.clip(lam[:, 0] * 5, 0, 1)                                 # мягкое затухание у границы света (оценка)
+    direct = (lam * dif[:3] * (1 - ks)[:, None] * sun_c + forced[:3]) * ao
+    ambient = amb[:3] * amb_env * f32(L["amb"] * 2) * (f32(0.5) * ao + f32(0.5))
+    diffuse_term = albedo * detail * (direct + ambient)
+    spec_col = spc[:3]
+    spec_term = spec_col * (nh ** sp_exp)[:, None] * (terminator * ks * scale)[:, None] * sun_c
     w_env = (f32(0.3) + f32(0.7) * gloss)[:, None]                            # шероховатое отражает «размытое» окружение
     env_eff = envc * w_env + amb_env * (1 - w_env)
-    refl_term = ao * env_eff * spec_col * fres * (spec_i * (f32(0.25) + f32(0.75) * gloss))[:, None] * f32(o.env_gain)
+    refl_term = (f32(0.5) * ao + f32(0.5)) * env_eff * spec_col * ks[:, None] * f32(o.env_gain)
     emis = emi[:3] + albedo * glow[:, None]
     lin = diffuse_term + spec_term + refl_term + emis
 

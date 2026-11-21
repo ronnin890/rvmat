@@ -106,15 +106,17 @@ void main(){
     float fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
     vec3 R = 2.0 * dot(Nf, V) * Nf - V;
     vec3 envc = envColor(R), ambEnv = envColor(Nf);
-    float spcMean = (spc.r + spc.g + spc.b) / 3.0;
-    float reflAmt = clamp(fres * specI * spcMean, 0.0, 1.0);
-    vec3 kd = albedo * detail * (1.0 - metal) * (1.0 - 0.7 * reflAmt);
-    vec3 diffuseT = kd * (amb * ambEnv * ambK * 2.0 * ao + dif * lam * sunC + forced);
-    vec3 specCol = spc * (1.0 - metal) + albedo * metal;
-    vec3 specT = specCol * pow(nh, spExp) * lam * sunC * specI * (spExp + 8.0) / 25.0;
+    float ks = clamp(fres * specI, 0.0, 1.0);                                   // specG * F
+    float scale = min(0.10986 * power + 0.0254, 24.05);                         // specularScale(p)
+    float terminator = clamp(lam * 5.0, 0.0, 1.0);
+    vec3 direct = (lam * dif * (1.0 - ks) * sunC + forced) * ao;
+    vec3 ambient = amb * ambEnv * ambK * 2.0 * (0.5 * ao + 0.5);
+    vec3 diffuseT = albedo * detail * (direct + ambient);
+    vec3 specCol = spc;
+    vec3 specT = specCol * pow(nh, spExp) * (terminator * ks * scale) * sunC;   // без нормировки: шероховатое = широкий яркий налёт
     float wEnv = 0.3 + 0.7 * gloss;
     vec3 envEff = envc * wEnv + ambEnv * (1.0 - wEnv);
-    vec3 reflT = ao * envEff * specCol * fres * (specI * (0.25 + 0.75 * gloss)) * envGain;
+    vec3 reflT = (0.5 * ao + 0.5) * envEff * specCol * ks * envGain;
     vec3 emis = emi + albedo * glow;
     vec3 lin = diffuseT + specT + reflT + emis;
     if (view == 1 || view == 8) lin = albedo;

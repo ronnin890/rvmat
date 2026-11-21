@@ -31,7 +31,7 @@ class Settings:
     window_state: str = ""        # base64 QMainWindow.saveState
     geometry: str = ""
     recent: list = field(default_factory=list)
-    env_gain: float = 2.5         # сила отражений окружения в превью (калибровка)
+    reflect_gain: float = 1.0     # сила отражений окружения в превью (калибровка); прежний ключ env_gain (2.5) устарел
     renderer: str = "auto"       # auto | gl | cpu
     lighting: str = "Студия"
     last_dir: str = ""

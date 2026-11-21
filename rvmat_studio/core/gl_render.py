@@ -73,7 +73,7 @@ void main(){
     vec3 albedo = vec3(0.45);
     if (hasB == 1) albedo = pow(texture(tBase, uv).rgb, vec3(2.2));      // _co с текстуры грани модели
     float ao = 1.0;
-    if (hasA == 1) ao = clamp(texture(tAs, tx(mA, oA, uv)).r, 0.0, 1.0);   // _as = Ambient Shadow
+    if (hasA == 1) ao = clamp(texture(tAs, tx(mA, oA, uv)).g, 0.0, 1.0);   // _as: R/B = 1, затенение в G
     if (view == 8) {
         vec2 c = tx(mN, oN, uv);
         float ck = mod(floor(c.x * 8.0) + floor(c.y * 8.0), 2.0);
@@ -93,14 +93,14 @@ void main(){
         nx *= nStr; ny *= nStr;
         Nf = normalize(T * nx + B * ny + N * nz);
     }
-    float specI = 1.0, metal = 0.0, gloss = 0.5, glow = 0.0;
-    if (hasS == 1) { vec4 s = texture(tSmdi, tx(mS, oS, uv)); specI = s.r; metal = s.g; gloss = s.b; glow = s.a; }
+    float specI = 1.0, metal = 0.0, gloss = 1.0, glow = 0.0, smdiR = 1.0;   // _smdi: R=1, G=specular, B=specular power
+    if (hasS == 1) { vec4 s = texture(tSmdi, tx(mS, oS, uv)); smdiR = s.r; specI = s.g; gloss = s.b; }
     vec3 L = normalize(sunDir);
     float lam = clamp(dot(Nf, L), 0.0, 1.0);
     vec3 sunC = sunCol * sunI;
     vec3 H = normalize(L + V);
     float nh = clamp(dot(Nf, H), 0.0, 1.0);
-    float spExp = max(power * (0.4 + gloss), 1.0);
+    float spExp = max(power * gloss, 1.0);
     float ndv = clamp(dot(Nf, V), 0.0, 1.0);
     float f0 = ((fresN - 1.0) * (fresN - 1.0) + fresK * fresK) / ((fresN + 1.0) * (fresN + 1.0) + fresK * fresK);
     float fres = f0 + (1.0 - f0) * pow(1.0 - ndv, 5.0);
@@ -117,7 +117,7 @@ void main(){
     if (view == 1 || view == 8) lin = albedo;
     else if (view == 2) lin = pow(Nf * 0.5 + 0.5, vec3(2.2));
     else if (view == 3) lin = vec3(specI);
-    else if (view == 4) lin = vec3(metal);
+    else if (view == 4) lin = vec3(smdiR);
     else if (view == 5) lin = vec3(gloss);
     else if (view == 6) lin = emis;
     else if (view == 7) lin = detail * 0.5;

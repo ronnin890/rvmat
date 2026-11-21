@@ -125,7 +125,7 @@ def test_assign_texture_with_project_root_and_preview(app, win, tmp_path):
     arr = np.zeros((32, 32, 4), np.uint8); arr[..., 1] = 220; arr[..., 3] = 255
     as_tex, co = root / "dz" / "mod" / "helm_as.png", root / "dz" / "mod" / "helm_co.png"
     Image.fromarray(arr).save(co)
-    ao = np.full((32, 32, 4), 255, np.uint8); ao[..., 0] = 60
+    ao = np.full((32, 32, 4), 255, np.uint8); ao[..., 1] = 60      # _as: затенение в канале G
     Image.fromarray(ao).save(as_tex)
     win.proj.project_root = str(root)
     win.rebuild_resolver()

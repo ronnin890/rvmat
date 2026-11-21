@@ -24,8 +24,8 @@ from .library import PartsTab, PresetsTab, StatesTab, TexturesTab
 from .preview import GLPreviewWidget, PreviewWidget
 from .properties import PropertiesPanel
 
-VIEWS = [("Итог", "final"), ("Base Color (_co)", "albedo"), ("AS: затенение ambient", "ao"), ("Нормали", "normal"), ("Specular (SMDI-R)", "specular"),
-         ("Metal (SMDI-G)", "metal"), ("Gloss (SMDI-B)", "gloss"), ("Свечение (SMDI-A)", "emissive"),
+VIEWS = [("Итог", "final"), ("Base Color (_co)", "albedo"), ("AS: затенение ambient", "ao"), ("Нормали", "normal"), ("Specular (SMDI-G)", "specular"),
+         ("SMDI-R (должен быть 1)", "metal"), ("Gloss (SMDI-B)", "gloss"), ("Свечение (emmisive)", "emissive"),
          ("Detail", "detail"), ("UV-шашечки", "checker")]
 SEV_TEXT = {Severity.ERROR: "Критическая", Severity.WARNING: "Предупреждение", Severity.INFO: "Инфо"}
 

@@ -2,8 +2,8 @@
 
 ВАЖНО: это приближение шейдера DayZ "Super", а не сам движок Enfusion.
 Интерпретация каналов (приближение): базовый цвет (_co) берётся НЕ из RVMAT, а из текстуры грани модели
-(в превью задаётся отдельно); Stage4 (_as) — Ambient Shadow, затеняет только рассеянный свет (используется канал R); nohq.rg — XY нормали;
-SMDI: R — specular, G — metal, B — gloss, A — свечение; DT — множитель детали (×2);
+(в превью задаётся отдельно); Stage4 (_as) — Ambient Shadow, затеняет только рассеянный свет (затенение в канале G); nohq.rg — XY нормали;
+SMDI: R=1, G — specular, B — specular power; DT — множитель детали (×2);
 Fresnel — по параметрам fresnel(n,k); окружение — процедурное небо или пользовательский HDRI/панорама.
 См. DIFFERENCES — список известных отличий от игры.
 """
@@ -26,9 +26,10 @@ DIFFERENCES = [
     "Рендер — приближение шейдера Super, а не движок Enfusion.",
     "Карты MC (damage/destruct) игры не применяются: показывается только основной материал.",
     "Окружение (Stage7) заменено процедурным небом/панорамой; кубическая env-карта игры не используется.",
-    "Интерпретация SMDI (R=specular, G=metal, B=gloss, A=glow) — оценочная.",
+    "SMDI: R=1 (не используется), G=карта specular, B=карта specular power (по описанию Super-шейдера и экспортёрам для DayZ); как именно B множится на specularPower — оценка.",
+    "Отдельной карты металличности в DayZ нет: металлический вид — это яркий specular (G) + Fresnel + отражение окружения, которое здесь упрощено.",
     "Base Color (_co) в RVMAT не хранится (приходит с текстуры грани модели) — в превью задаётся отдельно.",
-    "AS (_as) трактуется как Ambient Shadow по каналу R и ослабляет только рассеянный свет и отражения.",
+    "AS (_as) — Ambient Shadow: R и B = 1, затенение в канале G; ослабляет только рассеянный свет и отражения.",
     "Нет теней, SSAO, пост-обработки и HDR-экспозиции игры.",
 ]
 
@@ -355,7 +356,7 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
             r = geo.samples[bk] = (lin, o.base_color)
         albedo = r[0]
     asm = get(4)                                      # Ambient Shadow: ослабляет ambient, не солнце
-    ao = np.clip(asm[:, 0:1], 0, 1) if asm is not None else np.ones((n, 1), f32)
+    ao = np.clip(asm[:, 1:2], 0, 1) if asm is not None else np.ones((n, 1), f32)   # _as: R/B = 1, затенение в G
     if o.view == "checker":
         albedo = _checker(stage_uv(1))[:, :3] ** f32(2.2)
     s2 = mat.stage(2)
@@ -381,8 +382,13 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
         nrm_f /= np.maximum(np.linalg.norm(nrm_f, axis=1, keepdims=True), 1e-8)
     else:
         nrm_f = nrm
-    sm = get(5)
-    spec_i, metal, gloss, glow = (sm[:, 0], sm[:, 1], sm[:, 2], sm[:, 3]) if sm is not None else (np.ones(n, f32), np.zeros(n, f32), np.full(n, 0.5, f32), np.zeros(n, f32))
+    sm = get(5)                                       # _smdi: R = 1 (не используется), G = specular, B = specular power; A не используется
+    if sm is not None:
+        smdi_r, spec_i, gloss = sm[:, 0], sm[:, 1], sm[:, 2]
+    else:
+        smdi_r = spec_i = gloss = np.ones(n, f32)
+    metal = np.zeros(n, f32)                          # в DayZ отдельной карты металличности нет: «металл» = яркий specular + fresnel
+    glow = np.zeros(n, f32)                           # свечение — только emmisive из RVMAT (альфа SMDI не используется)
 
     ang = math.radians(o.light_rot)
     sv = np.array(L["sun"], f32)
@@ -393,7 +399,7 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     h = sv + view
     h /= np.maximum(np.linalg.norm(h, axis=1, keepdims=True), 1e-8)
     nh = np.clip((nrm_f * h).sum(1), 0, 1)
-    sp_exp = np.maximum(f32(power) * (f32(0.4) + gloss), f32(1.0))
+    sp_exp = np.maximum(f32(power) * gloss, f32(1.0))        # B — карта specular power
     fr_stage = mat.stage(6)
     n_, k_ = 1.5, 0.0
     if fr_stage and o.stages_on.get(6, True) and fr_stage.texture and is_procedural(fr_stage.texture):
@@ -424,8 +430,8 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
         lin = (nrm_f * 0.5 + 0.5) ** 2.2
     elif v == "specular":
         lin = np.tile(spec_i[:, None], (1, 3))
-    elif v == "metal":
-        lin = np.tile(metal[:, None], (1, 3))
+    elif v == "metal":                                # режим «SMDI R» (по спецификации — всегда 1)
+        lin = np.tile(smdi_r[:, None], (1, 3))
     elif v == "gloss":
         lin = np.tile(gloss[:, None], (1, 3))
     elif v == "emissive":

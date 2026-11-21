@@ -299,9 +299,9 @@ def test_base_color_comes_from_model_not_rvmat():
     assert m.to_text() == before                                          # RVMAT не изменился
 
 
-def test_as_is_ambient_shadow_not_color(tmp_path):
+def test_as_is_ambient_shadow_not_color(tmp_path):      # _as: R/B = 1, затенение в G
     (tmp_path / "dz").mkdir()
-    Image.fromarray(np.tile(np.array([40, 200, 200, 255], np.uint8), (16, 16, 1))).save(tmp_path / "dz" / "x_as.png")
+    Image.fromarray(np.tile(np.array([230, 40, 230, 255], np.uint8), (16, 16, 1))).save(tmp_path / "dz" / "x_as.png")
     m = super_template()
     res = make_resolver(tmp_path)
     base = _solid([200, 120, 40, 255])
@@ -311,7 +311,7 @@ def test_as_is_ambient_shadow_not_color(tmp_path):
     with_as = render(m, o, res)
     assert (without == with_as).all()                                     # _as не меняет базовый цвет
     ao = render(m, RenderOptions(width=160, height=160, view="ao"), res)
-    assert 100 < ao[80, 80, 0] < 120 and abs(int(ao[80, 80, 0]) - int(ao[80, 80, 1])) < 3     # AO = канал R: 40/255 → гамма-вывод ≈109
+    assert 100 < ao[80, 80, 0] < 120 and abs(int(ao[80, 80, 0]) - int(ao[80, 80, 1])) < 3     # AO = канал G: 40/255 → гамма-вывод ≈109
     fin_as = render(m, RenderOptions(width=160, height=160, base_color=base), res).astype(int)
     m.stage(4).texture = ""
     fin_no = render(m, RenderOptions(width=160, height=160, base_color=base), res).astype(int)

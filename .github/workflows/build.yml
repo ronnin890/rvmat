@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
-      - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
+      - uses: actions/setup-python@v7      # pin: scripts/pin_actions.py
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
-      - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
+      - uses: actions/setup-python@v7      # pin: scripts/pin_actions.py
         with:
           python-version: "3.12"
           cache: pip

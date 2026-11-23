@@ -7,7 +7,7 @@ import numpy as np
 
 from .. import __version__
 from ..backend import ALL_STATES, Material, State, kit_filename
-from ..core import dayztools, fbx, meshes
+from ..core import autoload, dayztools, fbx, meshes
 from ..core.presets import CATEGORIES, PresetManager
 from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
 from ..core.render import DIFFERENCES, LIGHTING, make_resolver
@@ -15,7 +15,7 @@ from ..core.settings import Settings
 from ..core.texnames import to_game_path, unique_game_path
 from ..core.textures import ThumbCache, convert_to_paa
 from . import theme
-from .dialogs import ExportDialog, SettingsDialog, TextureViewer
+from .dialogs import CandidateDialog, ExportDialog, SettingsDialog, TextureViewer
 from .panels import BottomPanel, IMG_TYPES, LeftPanel, PropsPanel
 from .preview import PreviewView
 from .widgets import ask_text
@@ -81,6 +81,7 @@ class StudioApp:
         f.add_command(label="Сохранить", accelerator="Ctrl+S", command=self.save_project)
         f.add_command(label="Сохранить как…", accelerator="Ctrl+Shift+S", command=lambda: self.save_project(True))
         f.add_separator()
+        f.add_command(label="Открыть папку проекта (FBX + data)…", accelerator="Ctrl+Shift+O", command=self.load_project_folder)
         f.add_command(label="Импорт RVMAT (один или комплект)…", accelerator="Ctrl+I", command=self.import_rvmat)
         f.add_command(label="Экспорт…", accelerator="Ctrl+E", command=self.export)
         f.add_separator(); f.add_command(label="Выход", accelerator="Ctrl+Q", command=self.close)
@@ -152,6 +153,7 @@ class StudioApp:
                      ("<Control-q>", self.close), ("<Control-comma>", self.open_settings), ("<F2>", lambda: self.left.parts.rename())):
             r.bind(k, lambda e, f=f: (f(), "break")[1])
         r.bind("<Control-S>", lambda e: (self.save_project(True), "break")[1])
+        r.bind("<Control-O>", lambda e: (self.load_project_folder(), "break")[1])
 
     def _init_layout(self):
         """Начальные пропорции: слева 330, справа 540 px, снизу ≈ 25 % высоты."""
@@ -489,14 +491,58 @@ class StudioApp:
             messagebox.showinfo("Просмотр", "Файл текстуры не найден (процедурная или вне корня проекта).", parent=self.root)
 
     def set_project_root(self):
-        d = filedialog.askdirectory(parent=self.root, title="Корень проекта / P: Drive", initialdir=self.proj.project_root or self.settings.project_root or self.settings.p_drive or None)
-        if d:
-            self.proj._change("Корень проекта")
-            self.proj.project_root = d
-            self.settings.project_root = d; self.settings.save()
-            self.rebuild_resolver()
-            self.proj._notify()
-            self.log(f"Корень проекта: {d}")
+        d = filedialog.askdirectory(parent=self.root, title="Корень проекта / P: Drive (папка меша: <меш>.fbx + data)", initialdir=self.proj.project_root or self.settings.project_root or self.settings.p_drive or None)
+        if not d:
+            return
+        if autoload.scan_folder(d) and self.load_project_folder(d, quiet=True):   # в папке лежит модель и/или data — подтягиваем всё сами
+            return
+        self.proj._change("Корень проекта")
+        self.proj.project_root = d
+        self.settings.project_root = d; self.settings.save()
+        self.rebuild_resolver()
+        self.proj._notify()
+        self.log(f"Корень проекта: {d}")
+
+    def load_project_folder(self, folder=None, quiet=False):
+        """Загрузка из папки <меш>/(<меш>.fbx, data/): модель, текстуры, материалы, селекшены, пресеты, настройки экспорта."""
+        folder = folder or filedialog.askdirectory(parent=self.root, title="Папка проекта: <меш> с файлом .fbx и папкой data",
+                                                   initialdir=self.proj.project_root or self.settings.project_root or self.settings.last_dir or None)
+        if not folder:
+            return False
+        cands = autoload.scan_folder(folder)
+        if not cands:
+            if not quiet:
+                messagebox.showinfo("Папка проекта", "В папке не найдено ни модели (.fbx/.obj), ни папки data с RVMAT/текстурами.", parent=self.root)
+            return False
+        cand = cands[0]
+        if len(cands) > 1:
+            dlg = CandidateDialog(self.root, cands)
+            self.root.wait_window(dlg)
+            cand = dlg.result
+            if cand is None:
+                return False
+        if not autoload.is_pristine(self.proj):          # не затираем чужую работу молча
+            if not messagebox.askyesno("Папка проекта", f"Найдено: {cand.summary()}\n\nЗагрузить? Текущий проект будет заменён.", parent=self.root):
+                return False
+            if not self._confirm_discard():
+                return False
+        part_names = []
+        if cand.model:
+            try:
+                part_names = list(self._load_model_file(str(cand.model)).part_names or [])
+            except Exception as e:
+                self.log(f"Модель {cand.model.name} не загружена: {e}")
+        msgs = autoload.load_candidate(self.proj, cand, part_names)
+        self.proj.path = None
+        self.settings.project_root = self.proj.project_root
+        self.settings.last_dir = str(cand.mesh_dir)
+        self.settings.save()
+        self.target = TARGET_SHARED
+        self.rebuild_resolver()
+        for m in msgs:
+            self.log(m)
+        self.flush()
+        return True
 
     def convert_textures(self):
         if not self.settings.image_to_paa:

@@ -376,3 +376,28 @@ class TextureViewer(Modal):
         self._photo = np_photo(np.asarray(im))
         self.canvas.delete("all")
         self.canvas.create_image(W // 2, H // 2, image=self._photo)
+
+
+class CandidateDialog(Modal):
+    """Выбор папки меша, если в выбранной папке их несколько."""
+
+    def __init__(self, parent, cands):
+        super().__init__(parent, "В папке найдено несколько проектов", 640, 340)
+        self.cands, self.result = cands, None
+        ttk.Label(self, text="Выберите, что загрузить:", style="Head.TLabel").pack(anchor="w", padx=12, pady=(10, 4))
+        self.lb = tk.Listbox(self, bg=theme.INPUT, fg=theme.FG, selectbackground=theme.ACC, activestyle="none", height=9)
+        for c in cands:
+            self.lb.insert("end", f"{c.mesh_dir.name}   —   {c.summary()}")
+        self.lb.selection_set(0)
+        self.lb.pack(fill="both", expand=True, padx=12)
+        self.lb.bind("<Double-1>", lambda e: self._ok())
+        b = ttk.Frame(self); b.pack(fill="x", padx=12, pady=10)
+        ttk.Button(b, text="Отмена", command=self.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(b, text="Загрузить", style="Accent.TButton", command=self._ok).pack(side="right")
+        self.bind("<Return>", lambda e: self._ok())
+
+    def _ok(self):
+        s = self.lb.curselection()
+        if s:
+            self.result = self.cands[s[0]]
+        self.destroy()

@@ -417,3 +417,78 @@ def test_huge_texture_thumbnail_does_not_block_ui(app, tmp_path):
     assert app.thumbs.peek(f) is None and time.time() - t0 < 0.5             # peek мгновенный: миниатюра считается в фоне
     assert pump(app, lambda: app.thumbs.version > 0, 30)
     assert app.thumbs.peek(f) is not None
+
+
+# ------------------------------------------------------------------ загрузка папки проекта
+@pytest.fixture
+def exported_dir(tmp_path):
+    from tests.test_autoload import OBJ, png
+    from rvmat_studio.core.project import Project
+    src = tmp_path / "src"
+    p = Project("helmet"); p.project_root = str(tmp_path / "P")
+    for suf in ("nohq", "smdi", "as"):
+        png(src / f"h_{suf}.png", (128, 128, 255, 255)); p.tex_map[f"src\\h_{suf}.paa"] = str(src / f"h_{suf}.png")
+    png(src / "h_co.png", (120, 80, 200, 255))
+    for stage, suf in ((1, "nohq"), (5, "smdi"), (4, "as")):
+        p.spec.shared.stage(stage).texture = f"src\\h_{suf}.paa"
+    p.set_value("shared", "specularPower", 44)
+    p.set_base_color(str(src / "h_co.png"))
+    (src / "helmet.obj").write_text(OBJ); p.model_path = str(src / "helmet.obj")
+    p.add_slot("glass"); p.assign_part("visor", "glass"); p.slot.preset_tag = "glass"
+    res = ex.run_export(ex.plan_export(p, {"out_root": str(tmp_path / "P" / "MyMod"), "p_drive": str(tmp_path / "P"), "mesh_name": "helmet", "states": ["base", "damage"]}))
+    assert not res.errors
+    return tmp_path / "P" / "MyMod" / "helmet"
+
+
+def test_choosing_project_root_autoloads_model_textures_and_materials(app, exported_dir, monkeypatch):
+    monkeypatch.setattr(dialogs.filedialog, "askdirectory", lambda **k: str(exported_dir))
+    from rvmat_studio.ui import app as appmod
+    monkeypatch.setattr(appmod.filedialog, "askdirectory", lambda **k: str(exported_dir))
+    assert app.proj.model_path == "" and not app.proj.textures
+    app.set_project_root()                                                       # «Инструменты → Корень проекта»
+    app.flush()
+    p = app.proj
+    assert p.model_path.endswith("helmet.fbx") and app.preview.shape == "Своя модель"
+    assert [s.name for s in p.slots] == ["helmet", "helmet_visor_glass"] and p.part_map == {"visor": "helmet_visor_glass"}
+    assert len(p.textures) == 4 and p.slots[0].spec.shared.get("specularPower") == 44
+    assert [app.left.parts.table.item(i, "values")[0] for i in app.left.parts.table.get_children()] == ["body", "visor"]
+    assert len(app.left.tex.tv.get_children()) == len(p.textures)
+    assert app.props.stages[1].tex.get().endswith("helmet_nohq.paa") and app.props.stages[1]._photo is not None or pump(app, lambda: app.props.stages[1]._photo is not None, 5)
+    img = app.preview.render_sync(); assert img[..., :3].std() > 3
+    assert not [i for i in p.validate() if i.severity.name == "ERROR"]
+    assert app.settings.project_root == p.project_root
+
+
+def test_open_project_folder_menu_and_non_pristine_confirmation(app, exported_dir, monkeypatch):
+    from rvmat_studio.ui import app as appmod
+    app.props.power.sv.set("77"); app.props.power._entry()                       # проект уже изменён
+    asked = []
+    monkeypatch.setattr(appmod.messagebox, "askyesno", lambda *a, **k: (asked.append(a[1]), False)[1])
+    assert app.load_project_folder(str(exported_dir)) is False                   # отказ — ничего не заменяется
+    assert asked and "будет заменён" in asked[0] and app.proj.spec.shared.get("specularPower") == 77 and app.proj.model_path == ""
+    monkeypatch.setattr(appmod.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(appmod.messagebox, "askyesnocancel", lambda *a, **k: False)    # «не сохранять»
+    assert app.load_project_folder(str(exported_dir)) is True
+    assert app.proj.slots[0].spec.shared.get("specularPower") == 44 and app.proj.model_path.endswith("helmet.fbx")
+    app.undo()                                                                   # загрузка — один шаг отмены
+    assert app.proj.model_path == ""
+
+
+def test_folder_without_project_files_and_multiple_candidates(app, exported_dir, tmp_path, monkeypatch):
+    from rvmat_studio.ui import app as appmod
+    shown = []
+    monkeypatch.setattr(appmod.messagebox, "showinfo", lambda *a, **k: shown.append(a[1]))
+    (tmp_path / "empty").mkdir()
+    assert app.load_project_folder(str(tmp_path / "empty")) is False and shown and "не найдено" in shown[0]
+    shown.clear()
+    assert app.load_project_folder(str(tmp_path / "empty"), quiet=True) is False and not shown      # при выборе корня — без назначения
+    import shutil
+    parent = tmp_path / "two"; shutil.copytree(exported_dir, parent / "helmet"); shutil.copytree(exported_dir, parent / "other")
+    (parent / "other" / "helmet.fbx").rename(parent / "other" / "other.fbx")
+    chosen = []
+    class Fake:
+        def __init__(self, parent_, cands): chosen.append([c.mesh_name for c in cands]); self.result = cands[1]
+    monkeypatch.setattr(appmod, "CandidateDialog", Fake)
+    monkeypatch.setattr(app.root, "wait_window", lambda w: None)
+    assert app.load_project_folder(str(parent)) is True
+    assert sorted(chosen[0]) == ["helmet", "other"] and app.proj.mesh_name == "other"

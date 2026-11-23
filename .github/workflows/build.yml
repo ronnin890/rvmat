@@ -20,7 +20,7 @@ jobs:
       matrix:
         python: ["3.10", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
+      - uses: actions/checkout@v7          # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
       - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
         with:
@@ -44,7 +44,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
+      - uses: actions/checkout@v7          # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
       - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
         with:

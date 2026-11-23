@@ -34,7 +34,7 @@ jobs:
         run: |
           Get-ChildItem dist/DayZRvmatStudio-Setup.exe, dist/DayZRvmatStudio-portable.zip | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Out-File -Encoding ascii dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4   # pin: scripts/pin_actions.py
+      - uses: actions/upload-artifact@v7   # pin: scripts/pin_actions.py
         with:
           name: DayZRvmatStudio-windows
           path: |

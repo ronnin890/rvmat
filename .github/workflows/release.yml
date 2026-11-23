@@ -2,6 +2,7 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:           # ручная сборка: установщик и zip сохраняются как артефакты (без публикации релиза)
 
 permissions:
   contents: read
@@ -10,22 +11,38 @@ jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: write          # только для публикации релиза
+      contents: write          # только для публикации релиза по тегу
     steps:
       - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
       - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
         with: { python-version: "3.12", cache: pip, cache-dependency-path: requirements.lock }
-      - run: pip install --require-hashes -r requirements.lock pyinstaller
+      - run: pip install --require-hashes -r requirements.lock
+      - run: pip install pyinstaller pytest
       - run: python -m pytest -q
-      - name: Сборка exe (PyInstaller, без консоли)
-        run: pyinstaller --noconfirm --onefile --windowed --name DayZRvmatStudio --collect-submodules rvmat_studio rvmat_studio/__main__.py
+      - name: Сборка (PyInstaller, папка без консоли)
+        run: pyinstaller --noconfirm packaging/rvmat_studio.spec
+      - name: Самопроверка собранной программы
+        run: dist\DayZRvmatStudio\DayZRvmatStudio.exe --selftest
+      - name: Портативный zip и установщик (Inno Setup)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/DayZRvmatStudio -DestinationPath dist/DayZRvmatStudio-portable.zip
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss
       - name: Контрольные суммы SHA-256
         shell: pwsh
         run: |
-          Get-FileHash dist/DayZRvmatStudio.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  DayZRvmatStudio.exe" } | Out-File -Encoding ascii dist/SHA256SUMS.txt
+          Get-ChildItem dist/DayZRvmatStudio-Setup.exe, dist/DayZRvmatStudio-portable.zip | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Out-File -Encoding ascii dist/SHA256SUMS.txt
           Get-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4   # pin: scripts/pin_actions.py
+        with:
+          name: DayZRvmatStudio-windows
+          path: |
+            dist/DayZRvmatStudio-Setup.exe
+            dist/DayZRvmatStudio-portable.zip
+            dist/SHA256SUMS.txt
       - name: Публикация релиза (gh)
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "${{ github.ref_name }}" dist/DayZRvmatStudio.exe dist/SHA256SUMS.txt --title "${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" dist/DayZRvmatStudio-Setup.exe dist/DayZRvmatStudio-portable.zip dist/SHA256SUMS.txt --title "${{ github.ref_name }}" --generate-notes

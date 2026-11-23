@@ -13,3 +13,4 @@ presets/
 logs/
 .coverage
 htmlcov/
+.buildvenv/

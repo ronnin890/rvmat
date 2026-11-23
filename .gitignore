@@ -7,3 +7,9 @@ build/
 dist/
 *.spec
 *.egg-info/
+settings.json
+recovery/
+presets/
+logs/
+.coverage
+htmlcov/

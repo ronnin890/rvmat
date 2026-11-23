@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0" || (echo Не удалось перейти в папку программы & pause & exit /b 1)
 
 rem --- Python (нужен 3.10+ с tkinter: обычный установщик с python.org его включает)
 set "PY="
@@ -16,9 +16,12 @@ rem --- первый запуск: маленькое окружение с nump
 if not exist ".venv\Scripts\python.exe" (
   echo Первый запуск: устанавливаю numpy и Pillow...
   %PY% -m venv .venv || goto :err
-  ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt || goto :err
-  echo Устанавливаю GPU-рендер ^(moderngl, ~1 МБ^)...
-  ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements-gl.txt || echo Не удалось поставить moderngl: предпросмотр будет работать на процессоре ^(медленнее на тяжёлых моделях^).
+  rem зависимости ставятся по requirements.lock с проверкой хешей; если lock не подходит этой версии Python - запасной путь (без проверки хешей)
+  ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q --require-hashes -r requirements.lock || (
+    echo Lock-файл не подошёл этой версии Python: устанавливаю по requirements.txt ^(без проверки хешей^).
+    ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt || goto :err
+    ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements-gl.txt || echo Не удалось поставить moderngl: предпросмотр будет работать на процессоре.
+  )
 )
 
 ".venv\Scripts\python.exe" -c "import tkinter" 2>nul || (

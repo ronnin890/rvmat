@@ -2,29 +2,57 @@ name: tests
 on:
   push:
     branches: ["claude/**", main]
+  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
+      - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-gl.txt
       - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libgl1-mesa-dri
-      - run: pip install -r requirements.txt -r requirements-gl.txt pytest
-      - name: Тесты (включая интерфейс tkinter под Xvfb)
-        run: xvfb-run -a python -m pytest -q
-        env: { LIBGL_ALWAYS_SOFTWARE: "1" }
+      - run: pip install -r requirements.txt -r requirements-gl.txt pytest pytest-cov hypothesis ruff mypy
+      - name: Линтер и типы
+        run: |
+          ruff check rvmat_studio tests
+          mypy rvmat_studio/core/limits.py rvmat_studio/core/safeio.py rvmat_studio/core/logs.py
+      - name: Тесты (включая интерфейс tkinter под Xvfb, если есть tkinter)
+        run: xvfb-run -a python -m pytest -q -rs --cov=rvmat_studio/core --cov=rvmat_studio/backend --cov-report=term --cov-fail-under=92
+        env: { LIBGL_ALWAYS_SOFTWARE: "1", RVMAT_REQUIRE_ALL: "1" }
       - name: Самопроверка приложения
         run: xvfb-run -a python -m rvmat_studio --selftest
 
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt -r requirements-gl.txt pytest
-      - run: python -m pytest -q
+      - uses: actions/checkout@v4          # pin: scripts/pin_actions.py
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@v5      # pin: scripts/pin_actions.py
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-gl.txt
+      - run: pip install -r requirements.txt -r requirements-gl.txt pytest hypothesis
+      - run: python -m pytest -q -rs
       - run: python -m rvmat_studio --selftest

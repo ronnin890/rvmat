@@ -5,10 +5,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .logs import log_exc
 from .texnames import convert_with_tool as convert_to_paa  # noqa: F401
+
+import struct
 
 import numpy as np
 from PIL import Image
+
+from . import limits
+
+limits.apply_pillow_limits()
 
 from .paa import PaaError, read_paa
 
@@ -48,13 +55,35 @@ class TextureInfo:
         return out
 
 
+class TextureError(ValueError):
+    """Текстуру нельзя прочитать (повреждена, слишком велика, неизвестный формат)."""
+
+
 def load_rgba(path) -> tuple[np.ndarray, str]:
+    """Прочитать текстуру в RGBA uint8. Лимиты размера файла и числа пикселей проверяются до декодирования;
+    любые ошибки данных → PaaError / TextureError (оба — ValueError)."""
     p = Path(path)
-    if p.suffix.lower() in GAME_EXT:
-        return read_paa(p.read_bytes(), p.name)
-    with Image.open(p) as im:
-        fmt = im.format or p.suffix[1:].upper()
-        return np.asarray(im.convert("RGBA")).copy(), fmt
+    try:
+        if p.suffix.lower() in GAME_EXT:
+            try:
+                raw = limits.read_limited(p, limits.MAX_PAA_FILE, "PAA")
+            except limits.LimitError as e:
+                raise PaaError(str(e)) from e
+            return read_paa(raw, p.name)
+        limits.check_file_size(p, limits.MAX_IMAGE_FILE, "Изображение")
+        with Image.open(p) as im:
+            limits.check_image_size(*im.size, what="Изображение")
+            fmt = im.format or p.suffix[1:].upper()
+            return np.asarray(im.convert("RGBA")).copy(), fmt
+    except (PaaError, TextureError):
+        raise
+    except (limits.LimitError, Image.DecompressionBombError, Image.DecompressionBombWarning, SyntaxError, EOFError,
+            struct.error, IndexError, KeyError, ValueError, TypeError, OverflowError, MemoryError, ZeroDivisionError) as e:
+        raise TextureError(f"Не удалось прочитать изображение: {e or type(e).__name__}") from e
+    except OSError as e:                      # includes UnidentifiedImageError, truncated files
+        if isinstance(e, FileNotFoundError):
+            raise
+        raise TextureError(f"Не удалось прочитать изображение: {e}") from e
 
 
 def probe(path) -> TextureInfo:
@@ -68,7 +97,7 @@ def probe(path) -> TextureInfo:
         ti.height, ti.width = arr.shape[:2]
         ti.fmt = fmt
         ti.has_alpha = bool((arr[:, :, 3] < 255).any())
-    except (PaaError, OSError, ValueError, Image.DecompressionBombError) as e:
+    except (PaaError, OSError, ValueError, Image.DecompressionBombError) as e:   # TextureError — ValueError
         ti.error = f"Не удалось прочитать: {e}"
     return ti
 
@@ -133,6 +162,7 @@ class ThumbCache:
             try:
                 self._c[key] = thumbnail(path, self.size)
             except Exception:
+                log_exc("textures.get")
                 self._c[key] = None
         return self._c[key]
 
@@ -160,6 +190,7 @@ class ThumbCache:
             try:
                 arr = thumbnail(path, self.size)
             except Exception:
+                log_exc("textures._run")
                 arr = None
             self._c[key] = arr
             self.version += 1

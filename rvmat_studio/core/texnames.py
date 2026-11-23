@@ -103,30 +103,55 @@ def _walk_ci(base: Path, parts: list[str]) -> Optional[Path]:
     return cur
 
 
-def find_texture(tex: str, project_root: str = "", mapping: Optional[dict] = None, extra_dirs=()) -> Optional[Path]:
-    """Игровой путь из RVMAT -> физический файл (регистр не важен; .png вместо .paa допускается)."""
+def find_texture(tex: str, project_root: str = "", mapping: Optional[dict] = None, extra_dirs=(),
+                 allowed=None, warn=None) -> Optional[Path]:
+    """Игровой путь из RVMAT -> физический файл (регистр не важен; .png вместо .paa допускается).
+
+    Безопасность: пути с «..», UNC/устройства отклоняются; найденный файл обязан лежать внутри корня, из которого
+    он найден (ссылки наружу не принимаются); абсолютные пути принимаются только внутри `allowed` (список корней;
+    None — без ограничения, для обратной совместимости). Записи `mapping` — явный выбор пользователя, их не проверяем.
+    Причина отклонения передаётся в warn(текст)."""
+    from .safeio import has_parent_ref, is_unc_or_device, is_within
     if not tex or tex.startswith("#("):
         return None
-    key = tex.replace("/", "\\").strip("\\").lower()
+    norm = tex.replace("/", "\\")
+    key = norm.strip("\\").lower()
     mp = {k.lower(): v for k, v in (mapping or {}).items()}.get(key)
     if mp and Path(mp).is_file():
         return Path(mp)
-    parts = tex.replace("/", "\\").strip("\\").split("\\")
+    if is_unc_or_device(norm) or has_parent_ref(norm):
+        if warn:
+            warn(f"Путь текстуры отклонён (UNC или «..»): {tex}")
+        return None
+    parts = [x for x in norm.strip("\\").split("\\") if x]
     for root in ([project_root] if project_root else []) + list(extra_dirs):
         if root and Path(root).is_dir():
             hit = _walk_ci(Path(root), parts)
             if hit is not None and hit.is_file():
+                if not is_within(hit, root):
+                    if warn:
+                        warn(f"Текстура {tex} указывает за пределы корня проекта (ссылка) — отклонена")
+                    continue
                 return hit
     p = Path(tex)
-    return p if p.is_absolute() and p.is_file() else None
+    if p.is_absolute() and p.is_file():
+        if allowed is not None and not any(is_within(p, a) for a in allowed if a):
+            if warn:
+                warn(f"Абсолютный путь вне корней проекта отклонён: {tex}")
+            return None
+        return p
+    return None
 
 
 def convert_with_tool(src: Path, image_to_paa: str, out: Optional[Path] = None) -> Path:
     """ImageToPAA.exe из DayZ Tools (Windows)."""
+    from . import dayztools
     out = out or src.with_suffix(".paa")
-    if not Path(image_to_paa).exists():
-        raise FileNotFoundError(f"ImageToPAA не найден: {image_to_paa}")
-    r = subprocess.run([str(image_to_paa), str(src), str(out)], capture_output=True, text=True, timeout=300)
+    exe = dayztools.validate_exe(image_to_paa, "image_to_paa")          # существует, имя ImageToPAA.exe, подтверждён
+    try:
+        r = subprocess.run([str(exe), str(src), str(out)], capture_output=True, text=True, timeout=300, shell=False)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("ImageToPAA не ответил за 300 с") from e
     if r.returncode != 0 or not out.exists():
         raise RuntimeError(f"ImageToPAA завершился с кодом {r.returncode}: {r.stderr or r.stdout}")
     return out

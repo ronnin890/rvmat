@@ -9,7 +9,9 @@ from typing import Any, Optional
 
 from ..backend import ALL_STATES, KitSpec, Material, State, validate_kit
 from ..backend.kit import apply_override, flatten_values
+from . import limits, safeio, texnames
 from .presets import super_template
+from .safeio import SchemaError
 from .settings import app_dir
 
 TARGET_SHARED = "shared"
@@ -39,14 +41,51 @@ class Slot:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Slot":
-        sl = cls(d["name"], Material.from_text(d["rvmat"]))
-        sl.spec.decorative = d.get("decorative", {})
-        sl.spec.overrides = {State(k): v for k, v in d.get("overrides", {}).items()}
-        sl.base_color = d.get("base_color", "")
-        sl.normal_strength = float(d.get("normal_strength", 1.0))
-        sl.preset_tag, sl.label = d.get("preset_tag", ""), d.get("label", "")
+        d = safeio.as_dict(d, "slot")
+        name = safeio.as_str(d.get("name"), "slot.name", maxlen=200).strip()
+        if not name:
+            raise SchemaError("Поле «slot.name»: пустое имя материала")
+        try:
+            mat = Material.from_text(safeio.as_str(d.get("rvmat"), "slot.rvmat", maxlen=limits.MAX_RVMAT_FILE))
+        except ValueError as e:
+            raise SchemaError(f"RVMAT материала «{name}» не разобран: {e}") from e
+        sl = cls(name, mat)
+        sl.spec.decorative = _flat_overrides(d.get("decorative"), "slot.decorative")
+        ov = safeio.as_dict(d.get("overrides"), "slot.overrides")
+        out = {}
+        for k, v in ov.items():
+            try:
+                out[State(k)] = _flat_overrides(v, f"slot.overrides.{k}")
+            except ValueError:
+                if isinstance(v, dict):
+                    raise SchemaError(f"Поле «slot.overrides»: неизвестное состояние {k!r}") from None
+                raise
+        sl.spec.overrides = out
+        sl.base_color = safeio.as_str(d.get("base_color"), "slot.base_color")
+        sl.normal_strength = safeio.as_float(d.get("normal_strength"), "slot.normal_strength", 1.0, 0.0, 10.0)
+        sl.preset_tag = safeio.as_str(d.get("preset_tag"), "slot.preset_tag", maxlen=200)
+        sl.label = safeio.as_str(d.get("label"), "slot.label", maxlen=200)
         sl.baseline = sl.spec.shared.clone()
         return sl
+
+
+def _flat_overrides(v, name: str) -> dict:
+    """{«Stage1.texture»: значение} — значения скаляры/списки скаляров ограниченной длины."""
+    d = safeio.as_dict(v, name)
+    if len(d) > 2000:
+        raise SchemaError(f"Поле «{name}»: слишком много записей")
+    out = {}
+    for k, x in d.items():
+        k = safeio.as_str(k, name + " (ключ)", maxlen=200)
+        if isinstance(x, list):
+            if len(x) > 64 or not all(isinstance(i, (str, int, float)) and not isinstance(i, bool) for i in x):
+                raise SchemaError(f"Поле «{name}.{k}»: недопустимый массив")
+        elif isinstance(x, str):
+            safeio.as_str(x, f"{name}.{k}")
+        elif isinstance(x, bool) or not isinstance(x, (int, float)):
+            raise SchemaError(f"Поле «{name}.{k}»: недопустимое значение")
+        out[k] = x
+    return out
 
 
 def _safe_name(n: str) -> str:
@@ -73,6 +112,9 @@ class Project:
         self.tex_map: dict[str, str] = {}   # игровой путь -> физический файл (вне корня проекта)
         self._last_change = ("", 0.0)
         self.path: Optional[Path] = None
+        self.load_warnings: list[str] = []              # предупреждения при открытии (новая версия формата и т. п.)
+        self.trusted_dirs: list[str] = []               # папки текстур, явно добавленные пользователем (на время сессии)
+        self.path_warnings: list[str] = []              # отклонённые небезопасные пути (для журнала)
         self.dirty = False
         self._undo: list[tuple[str, str]] = []
         self._redo: list[tuple[str, str]] = []
@@ -124,23 +166,52 @@ class Project:
                 "enabled": sorted(s.value for s in self.enabled), "project_root": self.project_root,
                 "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map}
 
+    EXPORT_OPT_KEYS = {"out_root": str, "mesh_name": str, "prefix": str, "textures": bool, "fbx": bool, "converter": str}
+
     @classmethod
     def from_dict(cls, d: dict) -> "Project":
+        """Проверяет типы, диапазоны и лимиты; неизвестные ключи игнорируются; неверные типы → SchemaError."""
+        d = safeio.as_dict(d, "проект")
+        warnings = []
+        ver = d.get("version", 1)
+        if isinstance(ver, int) and not isinstance(ver, bool) and ver > FORMAT_VERSION:
+            warnings.append(f"Проект создан более новой версией программы (формат {ver}, поддерживается {FORMAT_VERSION}): часть данных может быть потеряна")
         if "slots" in d:
-            p = cls(d.get("title", "newmaterial"))
-            p.slots = [Slot.from_dict(x) for x in d["slots"]]
-            p.active = min(int(d.get("active", 0)), len(p.slots) - 1)
-            p.part_map = dict(d.get("part_map", {}))
-            p.model_path = d.get("model_path", "")
-            p.mesh_name, p.export_opts = d.get("mesh_name", ""), dict(d.get("export_opts", {}))
+            p = cls(safeio.as_str(d.get("title"), "title", "newmaterial", 200) or "newmaterial")
+            raw = safeio.as_list(d["slots"], "slots", limits.MAX_SLOTS)
+            if not raw:
+                raise SchemaError("В проекте нет ни одного материала")
+            p.slots = [Slot.from_dict(x) for x in raw]
+            p.active = safeio.as_int(d.get("active"), "active", 0, 0, len(p.slots) - 1) if (isinstance(d.get("active"), int) and 0 <= d.get("active") < len(p.slots)) else 0
+            p.part_map = safeio.str_dict(d.get("part_map"), "part_map", limits.MAX_PARTS)
+            p.model_path = safeio.as_str(d.get("model_path"), "model_path")
+            p.mesh_name = safeio.as_str(d.get("mesh_name"), "mesh_name", maxlen=200)
+            eo = safeio.as_dict(d.get("export_opts"), "export_opts")
+            p.export_opts = {}
+            for k, t in cls.EXPORT_OPT_KEYS.items():             # неизвестные ключи (в т. ч. пути к exe) отбрасываются
+                if k in eo:
+                    v = eo[k]
+                    if not isinstance(v, t):
+                        raise SchemaError(f"Поле «export_opts.{k}»: неверный тип")
+                    p.export_opts[k] = safeio.as_str(v, f"export_opts.{k}") if t is str else v
+            if "states" in eo:
+                p.export_opts["states"] = [x for x in safeio.str_list(eo["states"], "export_opts.states", 16) if x in {s_.value for s_ in State}]
         else:                                           # формат v1: один материал
-            p = cls(d["name"], Material.from_text(d["rvmat"]))
-            p.slots = [Slot.from_dict({"name": d["name"], "rvmat": d["rvmat"], "decorative": d.get("decorative", {}),
+            name = safeio.as_str(d.get("name"), "name", maxlen=200)
+            if not name:
+                raise SchemaError("Не найдены данные проекта (поля «slots» или «name»)")
+            p = cls(name)
+            p.slots = [Slot.from_dict({"name": name, "rvmat": d.get("rvmat"), "decorative": d.get("decorative", {}),
                                        "overrides": d.get("overrides", {}), "base_color": d.get("base_color", "")})]
-        p.enabled = {State(s) for s in d.get("enabled", [s.value for s in ALL_STATES])}
-        p.project_root, p.export_dir = d.get("project_root", ""), d.get("export_dir", "")
-        p.textures = d.get("textures", [])
-        p.tex_map = d.get("tex_map", {})
+            p.title = name
+        valid = {s_.value for s_ in State}
+        en = safeio.str_list(d.get("enabled", [s_.value for s_ in ALL_STATES]), "enabled", 16)
+        p.enabled = {State(x) for x in en if x in valid}
+        p.project_root = safeio.as_str(d.get("project_root"), "project_root")
+        p.export_dir = safeio.as_str(d.get("export_dir"), "export_dir")
+        p.textures = safeio.str_list(d.get("textures"), "textures")
+        p.tex_map = safeio.str_dict(d.get("tex_map"), "tex_map")
+        p.load_warnings = warnings
         return p
 
     def _snap(self) -> str:
@@ -159,26 +230,80 @@ class Project:
         path = Path(path or self.path)
         if path is None:
             raise ValueError("Не указан путь")
-        if path.exists():
-            path.with_suffix(".rvproj.bak").write_bytes(path.read_bytes())
-        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=1), "utf-8")
+        safeio.atomic_write(path, json.dumps(self.to_dict(), ensure_ascii=False, indent=1), backup=True)
         self.path, self.dirty = path, False
 
     @classmethod
     def load(cls, path) -> "Project":
-        p = cls.from_dict(json.loads(Path(path).read_text("utf-8")))
+        p = cls.from_dict(safeio.read_json(path, "Проект"))
         p.path = Path(path)
         return p
+
+    # --- пути за пределами папки проекта
+    def external_refs(self, base_dir=None) -> list[tuple[str, str]]:
+        """Ссылки на файлы/папки вне папки самого проекта (base_dir; по умолчанию — папка файла .rvproj):
+        [(поле, значение)]. Корень проекта, содержащий папку проекта (например P:\\), — норма и не считается внешним."""
+        base = Path(base_dir) if base_dir else (self.path.parent if self.path else None)
+        if base is None:
+            return []
+        inside = lambda x: bool(x) and safeio.is_within(x, base)
+        root_ok = bool(self.project_root) and (inside(self.project_root) or safeio.is_within(base, self.project_root))
+        zone = [str(base)] + ([self.project_root] if root_ok else [])
+        ok = lambda x: any(safeio.is_within(x, z) for z in zone)
+        out: list[tuple[str, str]] = []
+        if self.project_root and not root_ok:
+            out.append(("Корень проекта", self.project_root))
+        for label, v in (("Папка экспорта", self.export_dir), ("Папка экспорта (настройки)", self.export_opts.get("out_root", "")),
+                         ("Модель", self.model_path)):
+            if v and not ok(v):
+                out.append((label, v))
+        out += [("Текстура", t) for t in self.textures if t and not ok(t)]
+        out += [(f"Путь {k}", v) for k, v in self.tex_map.items() if v and not ok(v)]
+        out += [(f"Base Color «{sl.name}»", sl.base_color) for sl in self.slots if sl.base_color and not ok(sl.base_color)]
+        return out
+
+    def drop_refs(self, refs) -> None:
+        """Убрать перечисленные внешние ссылки из проекта (пользователь отказался им доверять)."""
+        bad = {v for _, v in refs}
+        if self.project_root in bad:
+            self.project_root = ""
+        if self.export_dir in bad:
+            self.export_dir = ""
+        if self.export_opts.get("out_root") in bad:
+            self.export_opts.pop("out_root", None)
+        if self.model_path in bad:
+            self.model_path = ""
+        self.textures = [t for t in self.textures if t not in bad]
+        self.tex_map = {k: v for k, v in self.tex_map.items() if v not in bad}
+        for sl in self.slots:
+            if sl.base_color in bad:
+                sl.base_color = ""
+
+    def trust_dir(self, path) -> None:
+        d = str(Path(path).parent if Path(path).suffix else Path(path))
+        if d and d not in self.trusted_dirs:
+            self.trusted_dirs.append(d)
+
+    def allowed_roots(self, extra=()) -> list[str]:
+        roots = [self.project_root, str(self.path.parent) if self.path else "", self.export_dir, *self.trusted_dirs, *extra]
+        return [r for r in roots if r]
+
+    def find_texture(self, tex: str, extra=()):
+        """Игровой путь → физический файл с проверкой песочницы (см. texnames.find_texture)."""
+        def warn(m):
+            if m not in self.path_warnings:
+                self.path_warnings.append(m)
+        return texnames.find_texture(tex, self.project_root, self.tex_map, (), self.allowed_roots(extra), warn)
 
     # --- автосохранение / восстановление
     def autosave_path(self) -> Path:
         d = app_dir() / "recovery"
         d.mkdir(exist_ok=True)
-        return d / f"{self.title}.autosave.rvproj"
+        return safeio.ensure_within(d / f"{texnames.safe_name(self.title)}.autosave.rvproj", d)
 
     def autosave(self):
         if self.dirty:
-            self.autosave_path().write_text(json.dumps(self.to_dict(), ensure_ascii=False), "utf-8")
+            safeio.atomic_write(self.autosave_path(), json.dumps(self.to_dict(), ensure_ascii=False))
 
     @staticmethod
     def recovery_files() -> list[Path]:

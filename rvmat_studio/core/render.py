@@ -17,6 +17,7 @@ from typing import Callable, Optional
 import numpy as np
 from PIL import Image, ImageDraw
 
+from .logs import log_exc
 from ..backend import Material
 from ..backend.procedural import is_procedural, parse_procedural
 from .meshes import Mesh, SHAPES, get_shape
@@ -69,35 +70,13 @@ class RenderOptions:
 TexResolver = Callable[[str], Optional[np.ndarray]]   # игровой путь -> RGBA float32 [0..1] или None
 
 
-def make_resolver(project_root: Optional[Path], extra_dirs=(), max_size=768, mapping: Optional[dict] = None) -> TexResolver:
+def make_resolver(project_root: Optional[Path], extra_dirs=(), max_size=768, mapping: Optional[dict] = None,
+                  allowed=None, warn=None) -> TexResolver:
+    from .texnames import find_texture
     cache: dict = {}
-    mapping = {k.lower(): v for k, v in (mapping or {}).items()}
 
     def find(tex: str) -> Optional[Path]:
-        mp = mapping.get(tex.replace('/', '\\').strip('\\').lower())
-        if mp and Path(mp).is_file():
-            return Path(mp)
-        parts = tex.replace("/", "\\").strip("\\").split("\\")
-        roots = ([Path(project_root)] if project_root else []) + [Path(d) for d in extra_dirs]
-        for r in roots:
-            cur = r
-            for part in parts:
-                if not cur.is_dir():
-                    cur = None
-                    break
-                hit = next((c for c in cur.iterdir() if c.name.lower() == part.lower()), None)
-                if hit is None and part is parts[-1]:           # допускаем исходник вместо .paa
-                    stem = Path(part).stem.lower()
-                    hit = next((c for c in cur.iterdir() if c.stem.lower() == stem and c.suffix.lower() in
-                                (".png", ".tga", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")), None)
-                if hit is None:
-                    cur = None
-                    break
-                cur = hit
-            if cur is not None and cur.is_file():
-                return cur
-        p = Path(tex)
-        return p if p.is_absolute() and p.is_file() else None
+        return find_texture(tex, str(project_root) if project_root else "", mapping, extra_dirs, allowed, warn)
 
     def resolve(tex: str):
         if not tex or is_procedural(tex):
@@ -115,6 +94,7 @@ def make_resolver(project_root: Optional[Path], extra_dirs=(), max_size=768, map
                 cache[key] = np.asarray(im).astype(np.float32) / 255
             return cache[key]
         except Exception:
+            log_exc("render.resolve")
             return None
     resolve.find = find  # type: ignore
     return resolve

@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import safeio
+from .logs import log_exc
 from ..backend import Material, State
 from ..backend.kit import flatten_values
 from .project import Project, Slot
@@ -51,11 +53,13 @@ def _inspect(d: Path) -> Optional[Candidate]:
         data = next((p for p in d.iterdir() if p.is_dir() and p.name.lower() == "data"), None)
     except OSError:
         return None
+    inside = lambda p: safeio.is_within(p, d)                   # ссылки (symlink) наружу из папки меша игнорируются
+    models = [p for p in models if inside(p)]
     rv, tx = [], []
-    if data is not None:
+    if data is not None and inside(data):
         try:
-            rv = sorted(p for p in data.iterdir() if p.is_file() and p.suffix.lower() == ".rvmat")
-            tx = sorted(p for p in data.iterdir() if p.is_file() and p.suffix.lower() in ALL_EXT)
+            rv = sorted(p for p in data.iterdir() if p.is_file() and p.suffix.lower() == ".rvmat" and inside(p))[:500]
+            tx = sorted(p for p in data.iterdir() if p.is_file() and p.suffix.lower() in ALL_EXT and inside(p))[:2000]
         except OSError:
             pass
     if not models and not (rv or tx):
@@ -158,6 +162,7 @@ def load_candidate(proj: Project, cand: Candidate, part_names: Optional[list[str
         try:
             sl, sts, _ = _build_slot(groups[k], names[k])
         except Exception as e:
+            log_exc("autoload.load_candidate")
             msgs.append(f"{names[k]}: не удалось разобрать RVMAT ({e})")
             continue
         slots.append(sl); enabled |= sts

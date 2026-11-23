@@ -21,6 +21,7 @@ except ImportError:                                           # без moderngl 
     moderngl = None
 
 from ..backend.procedural import is_procedural, parse_procedural
+from .logs import log_exc
 from .render import LIGHTING, RenderOptions, _rot, _uv_matrix
 from .textures import load_rgba
 
@@ -138,6 +139,7 @@ class GLRenderer:
                 self.ctx = (moderngl.create_standalone_context(require=330, backend=be) if be else moderngl.create_standalone_context(require=330))
                 break
             except Exception as e:
+                log_exc("glrender.__init__")
                 err = str(e)
         if self.ctx is None:
             raise GLUnavailable(f"не удалось создать контекст OpenGL 3.3: {err}")
@@ -169,6 +171,7 @@ class GLRenderer:
         try:
             t.anisotropy = 8.0
         except Exception:
+            log_exc("glrender._upload")
             pass
         return t
 
@@ -193,6 +196,7 @@ class GLRenderer:
                 try:
                     rgba, _ = load_rgba(p)
                 except Exception:
+                    log_exc("glrender.texture_for")
                     self._put(key, None)
                     return None
                 self._put(key, self._upload(rgba))
@@ -361,6 +365,7 @@ class GLRenderer:
         try:
             self.ctx.release()
         except Exception:
+            log_exc("glrender.release")
             pass
 
 
@@ -379,6 +384,7 @@ class GLThread(threading.Thread):
         try:
             self.renderer = GLRenderer()
         except Exception as e:
+            log_exc("glrender.run")
             self.error = str(e)
             self.ready.set()
             return
@@ -391,6 +397,7 @@ class GLThread(threading.Thread):
             try:
                 box["result"] = fn(self.renderer)
             except Exception as e:
+                log_exc("glrender.run")
                 box["error"] = e
             finally:
                 box["done"].set()

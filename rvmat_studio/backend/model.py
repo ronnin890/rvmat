@@ -111,7 +111,10 @@ class Material:
 
     @classmethod
     def load(cls, path) -> "Material":
-        return cls.from_text(Path(path).read_bytes().decode("utf-8-sig"))
+        p = Path(path)
+        if p.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError("RVMAT слишком велик (максимум 2 МБ)")
+        return cls.from_text(p.read_bytes().decode("utf-8-sig", "replace"))
 
     def to_text(self) -> str:
         return P.serialize(self.root)

@@ -12,15 +12,17 @@ DayZ Tools) и FBX.
 """
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .logs import log_exc
 from ..backend import ALL_STATES, Severity, State, kit_filename, validate
-from . import fbx, fbxwrite, meshes, paa_write, textures
+from . import fbx, fbxwrite, limits, meshes, paa_write, safeio, textures
 from .project import Project, Slot
-from .texnames import SOURCE_EXT, STAGE_SUFFIX, convert_with_tool, find_texture, safe_name
+from .texnames import SOURCE_EXT, STAGE_SUFFIX, convert_with_tool, safe_name
 
 DEFAULT_STATES = ["base", "damage", "destruct"]
 
@@ -158,7 +160,7 @@ def plan_export(proj: Project, opts: dict) -> ExportPlan:
                 tex = st.texture or ""
                 if not want_tex or not tex or tex.startswith("#("):
                     continue
-                src = find_texture(tex, proj.project_root, proj.tex_map)
+                src = proj.find_texture(tex)
                 if src is None:
                     continue
                 role = STAGE_SUFFIX.get(st.index, f"stage{st.index}")
@@ -182,8 +184,13 @@ def plan_export(proj: Project, opts: dict) -> ExportPlan:
             for st in sl.spec.shared.stages():
                 t = st.texture or ""
                 if (t and not t.startswith("#(") and st.index in STAGE_SUFFIX and not t.lower().startswith(("dz\\", "data\\"))
-                        and not find_texture(t, proj.project_root, proj.tex_map)):
+                        and not proj.find_texture(t)):
                     plan.notes.append(f"{sl.name}: Stage{st.index} «{t}» не найден на диске — путь оставлен как есть")
+    for o in plan.ops:                                           # каждая запись обязана остаться внутри папки экспорта
+        try:
+            safeio.ensure_within(o.dst, out_dir)
+        except safeio.PathError as e:
+            raise ExportError(f"Путь вывода вне папки экспорта: {o.dst}") from e
     plan.existing = [o.dst for o in plan.ops if Path(o.dst).exists()]
     return plan
 
@@ -212,29 +219,38 @@ def _load_model(path: str):
     return fbx.load_fbx(path) if path.lower().endswith(".fbx") else meshes.load_obj(path)
 
 
-def run_op(op: Op, overwrite: bool, image_to_paa: str = "") -> str:
-    """Выполняет одну операцию; возвращает короткое примечание (или пусто)."""
+def run_op(op: Op, overwrite: bool, image_to_paa: str = "", root: Optional[str] = None) -> str:
+    """Выполняет одну операцию; возвращает короткое примечание (или пусто).
+    root — папка экспорта: путь записи обязан лежать внутри неё (иначе ExportError). Запись атомарная."""
     dst = Path(op.dst)
+    if root is not None:
+        try:
+            safeio.ensure_within(dst, root)
+        except safeio.PathError as e:
+            raise ExportError(f"Путь вывода вне папки экспорта: {dst}") from e
     _backup_and_prepare(dst, overwrite)
     if op.kind == "rvmat":
-        dst.write_bytes(op.text.encode("utf-8"))
+        safeio.atomic_write(dst, op.text.encode("utf-8"))
     elif op.kind == "texture" and op.mode == "copy":
-        shutil.copyfile(op.src, dst)
+        safeio.atomic_write(dst, limits.read_limited(op.src, limits.MAX_PAA_FILE, "PAA"))
     elif op.kind == "texture" and op.mode == "convert-tool":
-        tmp = dst.with_name(dst.stem + "__tmp" + Path(op.src).suffix)
+        tmp = dst.with_name("." + dst.stem + "__tmp" + Path(op.src).suffix)
+        out = dst.with_name("." + dst.stem + "__out.paa")
         shutil.copyfile(op.src, tmp)
         try:
-            convert_with_tool(tmp, image_to_paa, dst)
+            convert_with_tool(tmp, image_to_paa, out)
+            os.replace(out, dst)
         finally:
             tmp.unlink(missing_ok=True)
+            out.unlink(missing_ok=True)
     elif op.kind == "texture":
         rgba, _ = textures.load_rgba(op.src)
         data, info = paa_write.encode_paa(rgba, op.role)
-        dst.write_bytes(data)
+        safeio.atomic_write(dst, data)
         return f"{info['kind']} {info['width']}×{info['height']}" + (" (размер округлён до степени двойки)" if info["resized"] else "")
     elif op.kind == "fbx":
         if op.mode == "copy":
-            shutil.copyfile(op.src, dst)
+            safeio.atomic_write(dst, limits.read_limited(op.src, limits.MAX_FBX_FILE, "FBX"))
         else:
             fbxwrite.write_fbx(_load_model(op.src), dst, dst.stem)
     return ""
@@ -247,12 +263,13 @@ def run_export(plan: ExportPlan, overwrite: bool = False, image_to_paa: str = ""
         if progress:
             progress(i, len(plan.ops), op)
         try:
-            note = run_op(op, overwrite, image_to_paa)
+            note = run_op(op, overwrite, image_to_paa, plan.out_dir)
             res.written.append(op.dst)
             if note:
                 res.notes.append(f"{Path(op.dst).name}: {note}")
         except FileExistsError as e:
             res.errors.append(f"Файл уже существует: {e}")
         except Exception as e:                                   # одна ошибка не должна обрывать весь экспорт
+            log_exc("export.run_export")
             res.errors.append(f"{Path(op.dst).name}: {type(e).__name__}: {e}")
     return res

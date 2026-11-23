@@ -8,6 +8,8 @@ import struct
 
 import numpy as np
 
+from . import limits
+
 TAGS = {0xFF01: "DXT1", 0xFF02: "DXT2", 0xFF03: "DXT3", 0xFF04: "DXT4", 0xFF05: "DXT5",
         0x4444: "ARGB4444", 0x1555: "ARGB1555", 0x8888: "ARGB8888", 0x8080: "AI88"}
 
@@ -17,7 +19,18 @@ class PaaError(ValueError):
 
 
 def lzo1x_decompress(src: bytes, out_len: int) -> bytes:
-    """Декомпрессор LZO1X (по референсной реализации)."""
+    """Декомпрессор LZO1X (по референсной реализации). Любая ошибка потока → PaaError."""
+    try:
+        return _lzo1x(src, out_len)
+    except IndexError as e:
+        raise PaaError("LZO: поток обрезан или повреждён") from e
+
+
+def _lzo1x(src: bytes, out_len: int) -> bytes:
+    if out_len < 0 or out_len > limits.MAX_IMAGE_PIXELS * 4 + 4096:
+        raise PaaError("LZO: недопустимый размер распакованных данных")
+    if not src:
+        raise PaaError("LZO: пустые данные")
     out = bytearray()
     ip = 0
     n = len(src)
@@ -25,8 +38,13 @@ def lzo1x_decompress(src: bytes, out_len: int) -> bytes:
     def copy_match(dist, cnt):
         if dist <= 0 or dist > len(out):
             raise PaaError("LZO: неверное смещение")
-        for _ in range(cnt):
-            out.append(out[-dist])
+        if len(out) + cnt > out_len:
+            raise PaaError("LZO: вывод превышает ожидаемый размер")
+        if dist >= cnt:
+            out.extend(out[-dist:len(out) - dist + cnt])
+        else:                                   # перекрывающееся копирование = повтор шаблона
+            pat = bytes(out[-dist:])
+            out.extend((pat * (cnt // dist + 1))[:cnt])
 
     t = src[0]
     state = "loop"
@@ -191,6 +209,19 @@ def unswizzle_normal(rgba: np.ndarray) -> np.ndarray:
 
 
 def read_paa(data: bytes, name: str = "", swizzle=None) -> tuple[np.ndarray, str]:
+    """Прочитать PAA. Любые ошибки данных превращаются в PaaError. Описание — в _read_paa."""
+    if len(data) > limits.MAX_PAA_FILE:
+        raise PaaError(f"PAA слишком велик: {len(data) // limits.MiB} МБ")
+    try:
+        return _read_paa(data, name, swizzle)
+    except PaaError:
+        raise
+    except (limits.LimitError, struct.error, IndexError, KeyError, ValueError, TypeError, OverflowError,
+            MemoryError, RecursionError, AttributeError) as e:
+        raise PaaError(f"Повреждённый PAA: {e or type(e).__name__}") from e
+
+
+def _read_paa(data: bytes, name: str = "", swizzle=None) -> tuple[np.ndarray, str]:
     """-> (RGBA uint8 HxWx4, формат).
 
     swizzle: True/False — принудительно; None — авто: для DXT5 применяется обратная перестановка нормали,
@@ -213,6 +244,10 @@ def read_paa(data: bytes, name: str = "", swizzle=None) -> tuple[np.ndarray, str
     pos += 7
     lzo = bool(w & 0x8000)
     w &= 0x7FFF
+    try:
+        limits.check_image_size(w, h, "PAA")
+    except limits.LimitError as e:
+        raise PaaError(str(e)) from e
     raw = data[pos:pos + size]
     if kind.startswith("DXT"):
         exp = ((w + 3) // 4) * ((h + 3) // 4) * (8 if kind == "DXT1" else 16)

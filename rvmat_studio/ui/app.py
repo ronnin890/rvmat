@@ -5,6 +5,8 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
+from ..core import logs
+from ..core.logs import log_exc
 from .. import __version__
 from ..backend import ALL_STATES, Material, State, kit_filename
 from ..core import autoload, dayztools, fbx, meshes
@@ -13,7 +15,7 @@ from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
 from ..core.render import DIFFERENCES, LIGHTING, make_resolver
 from ..core.settings import Settings
 from ..core.texnames import to_game_path, unique_game_path
-from ..core.textures import ThumbCache, convert_to_paa
+from ..core.textures import ThumbCache, convert_to_paa, load_rgba
 from . import theme
 from .dialogs import CandidateDialog, ExportDialog, SettingsDialog, TextureViewer
 from .panels import BottomPanel, IMG_TYPES, LeftPanel, PropsPanel
@@ -28,6 +30,8 @@ class StudioApp:
     def __init__(self, settings=None, preset_manager=None, root=None):
         self.root = root or tk.Tk()
         self.settings = settings or Settings.load()
+        dayztools.set_trusted(self.settings.trusted_exes)
+        dayztools.enforce_trust = True                  # внешние программы запускаются только из подтверждённых путей
         self.pm = preset_manager or PresetManager()
         self.proj = Project()
         if self.settings.project_root:
@@ -64,6 +68,10 @@ class StudioApp:
         r.protocol("WM_DELETE_WINDOW", self.close)
         self.toasts: list = []
         self.log(f"DayZ RVMAT Studio {__version__} запущен · рендер: {self.preview.backend_info}")
+        logs.setup()
+        r.report_callback_exception = self._on_tk_error          # необработанная ошибка в обработчике → в журнал + краткое сообщение
+        for w in list(self.settings.warnings) + list(getattr(self.pm, "warnings", [])):
+            self.log(f"Предупреждение: {w}")
         self._thumb_ver = 0
         self.root.after(400, self._poll_thumbs)
         self.flush()
@@ -197,7 +205,8 @@ class StudioApp:
 
     def rebuild_resolver(self):
         root = Path(self.proj.project_root) if self.proj.project_root else None
-        self.resolver = make_resolver(root, mapping=self.proj.tex_map)
+        self.resolver = make_resolver(root, mapping=self.proj.tex_map, allowed=self.proj.allowed_roots(self.settings.texture_dirs + [self.settings.p_drive]),
+                                      warn=lambda m: m in self.proj.path_warnings or self.proj.path_warnings.append(m))
 
     def view_state(self) -> State:
         return State.DECORATIVE if self.target == TARGET_DECOR else (State.BASE if self.target == TARGET_SHARED else State(self.target))
@@ -334,6 +343,7 @@ class StudioApp:
             try:
                 self._load_model_file(p.model_path)
             except Exception as e:
+                log_exc("app._set_project")
                 self.log(f"Модель проекта не загружена: {e}")
         self.flush()
 
@@ -344,16 +354,45 @@ class StudioApp:
                 self._set_project(Project(n.strip()))
                 self.log(f"Новый проект: {n}")
 
+    def _on_tk_error(self, exc, val, tb):
+        import traceback
+        logs.LOGGER.error("Необработанное исключение в обработчике Tk\n%s", "".join(traceback.format_exception(exc, val, tb)))
+        self.status.set(f"Ошибка: {val} (подробности в журнале: {logs.log_path()})")
+        try:
+            self.log(f"Ошибка: {exc.__name__}: {val}")
+        except Exception:
+            pass
+
+    def _check_external_refs(self, p: Project) -> bool:
+        """Ссылки проекта за пределы его папки показываются пользователю: загрузить как есть / убрать / отмена."""
+        for w in p.load_warnings:
+            self.log(f"Предупреждение: {w}")
+        refs = p.external_refs()
+        if not refs:
+            return True
+        shown = "\n".join(f"  • {k}: {v}" for k, v in refs[:15]) + (f"\n  … и ещё {len(refs) - 15}" if len(refs) > 15 else "")
+        r = messagebox.askyesnocancel("Проект ссылается на файлы вне своей папки", f"Проект содержит пути за пределами папки проекта ({len(refs)}):\n\n{shown}\n\nДа — открыть как есть.\nНет — открыть, убрав эти ссылки.\nОтмена — не открывать.\n\nОткрывайте как есть только проекты из надёжных источников.", parent=self.root)
+        if r is None:
+            return False
+        if r is False:
+            p.drop_refs(refs)
+            self.log(f"Убраны внешние ссылки проекта: {len(refs)}")
+        return True
+
     def open_project(self, path=None):
         if not self._confirm_discard():
             return
         path = path or filedialog.askopenfilename(parent=self.root, title="Открыть проект", initialdir=self.settings.last_dir or None, filetypes=[("Проект RVMAT Studio", "*.rvproj")])
         if path:
             try:
-                self._set_project(Project.load(path))
+                p = Project.load(path)
+                if not self._check_external_refs(p):
+                    return
+                self._set_project(p)
                 self.settings.add_recent(str(path)); self._fill_recent()
                 self.log(f"Открыт {path}")
             except Exception as e:
+                log_exc("app.open_project")
                 messagebox.showerror("Открытие", f"Не удалось открыть проект:\n{e}", parent=self.root)
 
     def save_project(self, as_new=False) -> bool:
@@ -386,6 +425,7 @@ class StudioApp:
                 for m in self.proj.import_files(paths):
                     self.log(m)
             except Exception as e:
+                log_exc("app.import_rvmat")
                 messagebox.showerror("Импорт", f"Не удалось разобрать файл:\n{e}", parent=self.root)
 
     def export(self):
@@ -431,6 +471,7 @@ class StudioApp:
                         m.set_color(name, [float(x) for x in raw.split(",")])
                     m.save(f, backup=True); n += 1; log.insert("end", f"OK  {f}\n")
                 except Exception as e:
+                    log_exc("app.apply")
                     log.insert("end", f"ERR {f}: {e}\n")
             log.insert("end", f"Готово: {n}/{files.size()}\n")
         ttk.Button(top, text="Применить ко всем (создаются .bak)", style="Accent.TButton", command=apply).pack(pady=8)
@@ -531,6 +572,7 @@ class StudioApp:
             try:
                 part_names = list(self._load_model_file(str(cand.model)).part_names or [])
             except Exception as e:
+                log_exc("app.load_project_folder")
                 self.log(f"Модель {cand.model.name} не загружена: {e}")
         msgs = autoload.load_candidate(self.proj, cand, part_names)
         self.proj.path = None
@@ -544,9 +586,28 @@ class StudioApp:
         self.flush()
         return True
 
+    def confirm_tool(self, kind: str) -> bool:
+        """Перед первым запуском внешней программы из нового пути спрашивает пользователя (и запоминает ответ)."""
+        path = getattr(self.settings, kind)
+        try:
+            exe = dayztools.validate_exe(path, kind, check_trust=False)
+        except dayztools.ToolError as e:
+            messagebox.showwarning("Внешняя программа", str(e), parent=self.root)
+            return False
+        if dayztools.is_trusted(exe):
+            return True
+        if not messagebox.askyesno("Запуск внешней программы", f"Будет запущена программа из пути, который ещё не подтверждался:\n\n{exe}\n\nЗапустить и запомнить этот путь?", parent=self.root):
+            return False
+        dayztools.trust(exe)
+        self.settings.trusted_exes = sorted(set(self.settings.trusted_exes) | {str(exe)})
+        self.settings.save()
+        return True
+
     def convert_textures(self):
         if not self.settings.image_to_paa:
             messagebox.showinfo("PAA", "Укажите путь к ImageToPAA.exe в Настройках (нужны DayZ Tools на Windows).", parent=self.root)
+            return
+        if not self.confirm_tool("image_to_paa"):
             return
         ok = bad = 0
         for t in self.proj.textures:
@@ -555,11 +616,14 @@ class StudioApp:
                 try:
                     self.log(f"PAA: {convert_to_paa(p, Path(self.settings.image_to_paa))}"); ok += 1
                 except Exception as e:
+                    log_exc("app.convert_textures")
                     self.log(f"Ошибка конвертации {p.name}: {e}"); bad += 1
         messagebox.showinfo("PAA", f"Готово: {ok}, ошибок: {bad}", parent=self.root)
 
     def open_workbench(self):
         st = self.settings
+        if st.workbench and not self.confirm_tool("workbench"):
+            return
         try:
             _, gp = dayztools.check_in_workbench(st.workbench, st.gproj, st.p_drive, self.proj.project_root or st.project_root, st.dayz_tools)
             self.log(f"Workbench запущен с проектом {gp}")
@@ -604,6 +668,7 @@ class StudioApp:
         try:
             mesh = self._load_model_file(f)
         except Exception as e:
+            log_exc("app.import_model")
             messagebox.showwarning("Модель", f"Не удалось загрузить: {e}", parent=self.root)
             return
         self.proj.model_path = f
@@ -617,7 +682,12 @@ class StudioApp:
         f = filedialog.askopenfilename(parent=self.root, title="HDRI / панорама", filetypes=[("Изображения", "*.png *.jpg *.jpeg *.bmp *.tga"), ("Все", "*.*")])
         if f:
             from PIL import Image
-            im = Image.open(f).convert("RGB"); im.thumbnail((1024, 512))
+            try:
+                arr, _ = load_rgba(f)
+            except (ValueError, OSError) as e:
+                messagebox.showwarning("HDRI", f"Не удалось загрузить: {e}", parent=self.root)
+                return
+            im = Image.fromarray(arr[:, :, :3]); im.thumbnail((1024, 512))
             self.preview.hdri = (np.asarray(im).astype("float32") / 255) ** 2.2
             self.preview.request()
             self.log(f"Окружение: {Path(f).name}")
@@ -649,7 +719,12 @@ class StudioApp:
     def check_recovery(self):
         files = Project.recovery_files()
         if files and messagebox.askyesno("Восстановление", f"Найдено автосохранение:\n{files[-1].name}\nВосстановить?", parent=self.root):
-            p = Project.load(files[-1])
+            try:
+                p = Project.load(files[-1])
+            except Exception as e:
+                log_exc("app.check_recovery")
+                messagebox.showwarning("Восстановление", f"Автосохранение повреждено и не открыто:\n{e}", parent=self.root)
+                return
             p.path, p.dirty = None, True
             self._set_project(p)
 
@@ -674,7 +749,9 @@ def main(argv=None) -> int:
             import ctypes
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
+            log_exc("app.main")
             pass
+    logs.setup()
     app = StudioApp()
     app.root.after(300, app.check_recovery)
     app.root.mainloop()

@@ -492,3 +492,79 @@ def test_folder_without_project_files_and_multiple_candidates(app, exported_dir,
     monkeypatch.setattr(app.root, "wait_window", lambda w: None)
     assert app.load_project_folder(str(parent)) is True
     assert sorted(chosen[0]) == ["helmet", "other"] and app.proj.mesh_name == "other"
+
+
+# ------------------------------------------------------------------ безопасность: внешние ссылки и внешние программы
+def _project_with_external_refs(tmp_path):
+    from rvmat_studio.core.project import Project
+    (tmp_path / "proj").mkdir()
+    p = Project("ext"); p.path = tmp_path / "proj" / "ext.rvproj"
+    p.project_root = str(tmp_path / "elsewhere")
+    p.tex_map = {"a.paa": str(tmp_path / "outside" / "a.png")}
+    p.save()
+    return tmp_path / "proj" / "ext.rvproj"
+
+
+def test_open_project_asks_about_external_paths(app, tmp_path, monkeypatch):
+    from rvmat_studio.ui import app as appmod
+    f = _project_with_external_refs(tmp_path)
+    shown = []
+    monkeypatch.setattr(appmod.messagebox, "askyesnocancel", lambda *a, **k: (shown.append(a[1]), None)[1])
+    app.open_project(str(f))                                                 # Отмена — проект не открыт
+    assert shown and "elsewhere" in shown[0] and "outside" in shown[0] and app.proj.title != "ext"
+    monkeypatch.setattr(appmod.messagebox, "askyesnocancel", lambda *a, **k: False)    # Нет — открыть без ссылок
+    app.open_project(str(f))
+    assert app.proj.title == "ext" and app.proj.project_root == "" and app.proj.tex_map == {}
+    monkeypatch.setattr(appmod.messagebox, "askyesnocancel", lambda *a, **k: True)     # Да — как есть
+    app.open_project(str(f))
+    assert app.proj.project_root.endswith("elsewhere") and len(app.proj.tex_map) == 1
+
+
+def test_open_project_with_own_files_shows_no_dialog(app, tmp_path, monkeypatch):
+    from rvmat_studio.core.project import Project
+    from rvmat_studio.ui import app as appmod
+    p = Project("own"); p.path = tmp_path / "own.rvproj"; p.save()
+    monkeypatch.setattr(appmod.messagebox, "askyesnocancel", lambda *a, **k: pytest.fail("диалог не нужен"))
+    app.open_project(str(p.path))
+    assert app.proj.title == "own"
+
+
+def test_corrupt_project_shows_error_not_crash(app, tmp_path, monkeypatch):
+    from rvmat_studio.ui import app as appmod
+    f = tmp_path / "bad.rvproj"; f.write_text("{broken")
+    errs = []
+    monkeypatch.setattr(appmod.messagebox, "showerror", lambda *a, **k: errs.append(a[1]))
+    app.open_project(str(f))
+    assert errs and "Не удалось открыть" in errs[0]
+
+
+def test_confirm_tool_asks_once_and_remembers(app, tmp_path, monkeypatch):
+    from rvmat_studio.core import dayztools
+    from rvmat_studio.ui import app as appmod
+    exe = tmp_path / "ImageToPAA.exe"; exe.write_text("x")
+    app.settings.image_to_paa = str(exe)
+    monkeypatch.setattr(dayztools, "_trusted", set())
+    asked = []
+    monkeypatch.setattr(appmod.messagebox, "askyesno", lambda *a, **k: (asked.append(1), False)[1])
+    assert app.confirm_tool("image_to_paa") is False and len(asked) == 1 and not app.settings.trusted_exes
+    monkeypatch.setattr(appmod.messagebox, "askyesno", lambda *a, **k: (asked.append(1), True)[1])
+    assert app.confirm_tool("image_to_paa") is True and len(asked) == 2 and app.settings.trusted_exes == [str(exe)]
+    assert app.confirm_tool("image_to_paa") is True and len(asked) == 2                 # второй раз не спрашивает
+    app.settings.image_to_paa = str(tmp_path / "calc.exe")
+    (tmp_path / "calc.exe").write_text("x")
+    warned = []
+    monkeypatch.setattr(appmod.messagebox, "showwarning", lambda *a, **k: warned.append(a[1]))
+    assert app.confirm_tool("image_to_paa") is False and warned and "imagetopaa" in warned[0].lower()
+
+
+def test_tk_callback_errors_are_logged_not_fatal(app):
+    from rvmat_studio.core import logs
+    logs.setup()
+    try:
+        raise RuntimeError("tk-callback-test")
+    except RuntimeError as e:
+        app._on_tk_error(type(e), e, e.__traceback__)
+    assert "tk-callback-test" in app.status.get()
+    for h in logs.LOGGER.handlers:
+        h.flush()
+    assert "tk-callback-test" in logs.log_path().read_text("utf-8")

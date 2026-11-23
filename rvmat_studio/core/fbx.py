@@ -14,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import limits
 from .meshes import Mesh
 
 MAGIC = b"Kaydara FBX Binary  \x00\x1a\x00"
@@ -38,80 +39,134 @@ class Node:
 
 # ------------------------------------------------------------------ binary
 _ARR = {"f": ("f", 4), "d": ("d", 8), "l": ("q", 8), "i": ("i", 4), "b": ("?", 1)}
+_SCALAR = {"Y": ("<h", 2), "I": ("<i", 4), "F": ("<f", 4), "D": ("<d", 8), "L": ("<q", 8)}
 
 
 def _parse_binary(data: bytes) -> list[Node]:
+    """Итеративный разбор (без рекурсии) с проверкой границ, глубины и размера распакованных массивов."""
+    size = len(data)
+    if size < 27 + 13:
+        raise FbxError("FBX обрезан: слишком короткий файл")
     ver = struct.unpack_from("<I", data, 23)[0]
     wide = ver >= 7500
+    hdr = 24 if wide else 12
+    nul = hdr + 1                                    # размер «нулевой» записи-терминатора
+    fmt = "<QQQ" if wide else "<III"
     pos = 27
+    out: list[Node] = []
+    stack: list[tuple[Node, int]] = []               # (узел, конец)
+    nodes = 0
+    total_arr = 0
 
-    def rd(fmt, p):
-        return struct.unpack_from(fmt, data, p)
+    def need(p, n):
+        if n < 0 or p + n > size:
+            raise FbxError("FBX обрезан или повреждён: выход за границы файла")
 
-    def node(p):
-        if wide:
-            end, nprops, plen = rd("<QQQ", p); p += 24
-        else:
-            end, nprops, plen = rd("<III", p); p += 12
-        nl = data[p]; p += 1
-        if end == 0:
-            return None, p - (25 if wide else 13)
+    while True:
+        if stack and pos >= stack[-1][1]:            # узел закончился без явного терминатора
+            pos = stack.pop()[1]
+            continue
+        parent_end = stack[-1][1] if stack else size
+        if pos + nul > parent_end:
+            if stack:
+                raise FbxError("FBX повреждён: узел выходит за границы родителя")
+            break
+        end, nprops, plen = struct.unpack_from(fmt, data, pos)
+        nl = data[pos + hdr]
+        if end == 0:                                 # терминатор: закрывает текущий узел
+            pos += nul
+            if stack:
+                node, nend = stack.pop()
+                if nend < pos or nend > parent_end:
+                    raise FbxError("FBX повреждён: неверный конец узла")
+                pos = nend
+                continue
+            break
+        if end <= pos or end > parent_end:
+            raise FbxError("FBX повреждён: неверное смещение конца узла")
+        nodes += 1
+        if nodes > limits.MAX_FBX_NODES:
+            raise FbxError(f"FBX: слишком много узлов (> {limits.MAX_FBX_NODES})")
+        if len(stack) >= limits.MAX_FBX_DEPTH:
+            raise FbxError(f"FBX: слишком глубокая вложенность (> {limits.MAX_FBX_DEPTH})")
+        if nprops > limits.MAX_FBX_PROPS or nprops > plen:
+            raise FbxError("FBX повреждён: неверное число свойств")
+        p = pos + hdr + 1
+        need(p, nl)
         name = data[p:p + nl].decode("latin1"); p += nl
+        pend = p + plen
+        if pend > end:
+            raise FbxError("FBX повреждён: свойства выходят за границы узла")
         props = []
         for _ in range(nprops):
+            need(p, 1)
             t = chr(data[p]); p += 1
-            if t == "Y": props.append(rd("<h", p)[0]); p += 2
-            elif t == "C": props.append(bool(data[p])); p += 1
-            elif t == "I": props.append(rd("<i", p)[0]); p += 4
-            elif t == "F": props.append(rd("<f", p)[0]); p += 4
-            elif t == "D": props.append(rd("<d", p)[0]); p += 8
-            elif t == "L": props.append(rd("<q", p)[0]); p += 8
+            if t in _SCALAR:
+                f, n = _SCALAR[t]
+                need(p, n); props.append(struct.unpack_from(f, data, p)[0]); p += n
+            elif t == "C":
+                need(p, 1); props.append(bool(data[p])); p += 1
             elif t in _ARR:
-                n, enc, clen = rd("<III", p); p += 12
+                need(p, 12)
+                n, enc, clen = struct.unpack_from("<III", data, p); p += 12
                 code, sz = _ARR[t]
+                nbytes = n * sz
+                if nbytes > limits.MAX_FBX_ARRAY_BYTES:
+                    raise FbxError(f"FBX: массив слишком велик ({nbytes // limits.MiB} МБ)")
+                total_arr += nbytes
+                if total_arr > limits.MAX_FBX_TOTAL_ARRAY_BYTES:
+                    raise FbxError("FBX: суммарный размер массивов превышает допустимый")
+                need(p, clen)
                 raw = data[p:p + clen]; p += clen
                 if enc == 1:
-                    raw = zlib.decompress(raw)
-                props.append(np.frombuffer(raw[:n * sz], dtype="<" + code).copy())
+                    d = zlib.decompressobj()
+                    try:
+                        raw = d.decompress(raw, nbytes + 1)          # не больше заявленного размера (защита от zip-бомбы)
+                    except zlib.error as e:
+                        raise FbxError(f"FBX: повреждённый сжатый массив ({e})") from e
+                    if len(raw) > nbytes:
+                        raise FbxError("FBX: массив распаковывается в больший размер, чем заявлено")
+                elif enc != 0:
+                    raise FbxError(f"FBX: неизвестное кодирование массива {enc}")
+                if len(raw) < nbytes:
+                    raise FbxError("FBX: массив короче заявленного")
+                props.append(np.frombuffer(raw, dtype="<" + code, count=n))
             elif t in "SR":
-                n = rd("<I", p)[0]; p += 4
+                need(p, 4)
+                n = struct.unpack_from("<I", data, p)[0]; p += 4
+                if n > limits.MAX_FBX_STRING:
+                    raise FbxError("FBX: слишком длинная строка")
+                need(p, n)
                 b = data[p:p + n]; p += n
                 props.append(b.decode("utf-8", "replace") if t == "S" else bytes(b))
             else:
                 raise FbxError(f"Неизвестный тип свойства {t!r}")
-        n = Node(name, props)
-        while p < end:
-            ch, p2 = node(p)
-            if ch is None:
-                p = p2 + (25 if wide else 13)
-                break
-            n.children.append(ch)
-            p = p2
-        return n, end
-
-    out = []
-    while pos < len(data) - 13:
-        n, p2 = node(pos)
-        if n is None:
-            break
-        out.append(n)
-        pos = p2
+            if p > pend:
+                raise FbxError("FBX повреждён: свойство выходит за заявленный размер")
+        node = Node(name, props)
+        (stack[-1][0].children if stack else out).append(node)
+        pos = pend
+        if pos < end:
+            stack.append((node, end))               # есть дочерние узлы
+        else:
+            pos = end
     return out
 
 
 # ------------------------------------------------------------------ ASCII
 _TOK = re.compile(r'\s*(?:;[^\n]*\n|(?P<s>"(?:[^"\\]|\\.)*")|(?P<k>[A-Za-z_][\w.]*)\s*:|(?P<n>[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|(?P<p>[{},*]))')
+_IDENT = re.compile(r"\s*([A-Za-z_]\w*)")
 
 
 def _parse_ascii(text: str) -> list[Node]:
-    toks, pos = [], 0
-    while pos < len(text):
+    toks, pos, n_text = [], 0, len(text)
+    while pos < n_text:
         m = _TOK.match(text, pos)
         if not m or m.end() == pos:
-            if text[pos:].strip() == "":
+            if text[pos:pos + 1024].strip() == "" and text[pos:].strip() == "":
                 break
             # пропуск неизвестных символов (например, идентификаторы без двоеточия — значения-ключи)
-            m2 = re.compile(r"\s*([A-Za-z_]\w*)").match(text, pos)
+            m2 = _IDENT.match(text, pos)
             if m2:
                 toks.append(("s", m2.group(1))); pos = m2.end(); continue
             raise FbxError(f"ASCII FBX: неожиданный символ в позиции {pos}")
@@ -120,10 +175,15 @@ def _parse_ascii(text: str) -> list[Node]:
         elif m.group("k") is not None: toks.append(("k", m.group("k")))
         elif m.group("n") is not None: toks.append(("n", m.group("n")))
         elif m.group("p") is not None: toks.append(("p", m.group("p")))
+        if len(toks) > limits.MAX_ASCII_TOKENS:
+            raise FbxError(f"ASCII FBX: слишком много токенов (> {limits.MAX_ASCII_TOKENS})")
     i = 0
+    count = 0
 
-    def parse_nodes(end_on_brace):
-        nonlocal i
+    def parse_nodes(end_on_brace, depth):
+        nonlocal i, count
+        if depth > limits.MAX_FBX_DEPTH:
+            raise FbxError(f"FBX: слишком глубокая вложенность (> {limits.MAX_FBX_DEPTH})")
         res = []
         while i < len(toks):
             k, v = toks[i]
@@ -136,6 +196,9 @@ def _parse_ascii(text: str) -> list[Node]:
                 i += 1
                 continue
             i += 1
+            count += 1
+            if count > limits.MAX_FBX_NODES:
+                raise FbxError(f"FBX: слишком много узлов (> {limits.MAX_FBX_NODES})")
             n = Node(v)
             props = []
             while i < len(toks):
@@ -144,7 +207,7 @@ def _parse_ascii(text: str) -> list[Node]:
                     break
                 if k == "p" and v2 == "{":
                     i += 1
-                    n.children = parse_nodes(True)
+                    n.children = parse_nodes(True, depth + 1)
                     break
                 if k == "p" and v2 == "*":
                     i += 2        # *N — размер массива; дальше идёт { a: ... }
@@ -152,23 +215,34 @@ def _parse_ascii(text: str) -> list[Node]:
                 if k == "p" and v2 == ",":
                     i += 1
                     continue
-                props.append(float(v2) if k == "n" and ("." in v2 or "e" in v2.lower()) else (int(v2) if k == "n" else v2))
+                try:
+                    props.append(float(v2) if k == "n" and ("." in v2 or "e" in v2.lower()) else (int(v2) if k == "n" else v2))
+                except ValueError as e:
+                    raise FbxError(f"ASCII FBX: неверное число {v2!r}") from e
                 i += 1
             n.props = props
             # блок массива "{ a: 1,2,3 }" -> узел 'a' со свойствами-числами: свернуть в numpy
             a = n.find("a")
             if a is not None and len(n.children) == 1:
-                n.props = [np.array(a.props, dtype=np.float64 if any(isinstance(x, float) for x in a.props) else np.int64)]
+                try:
+                    n.props = [np.array(a.props, dtype=np.float64 if any(isinstance(x, float) for x in a.props) else np.int64)]
+                except (ValueError, TypeError, OverflowError) as e:
+                    raise FbxError("ASCII FBX: некорректный числовой массив") from e
                 n.children = []
             res.append(n)
         return res
-    return parse_nodes(False)
+    return parse_nodes(False, 0)
 
 
 # ------------------------------------------------------------------ mesh
 def parse_fbx(data: bytes) -> list[Node]:
     if data.startswith(MAGIC[:20]):
         return _parse_binary(data)
+    if len(data) > limits.MAX_FBX_ASCII_FILE:
+        raise FbxError(f"ASCII FBX слишком велик (максимум {limits.MAX_FBX_ASCII_FILE // limits.MiB} МБ)")
+    head = data[:64].lstrip()
+    if not (head.startswith(b";") or head[:1].isalpha()):
+        raise FbxError("Это не FBX-файл (неизвестный заголовок)")
     return _parse_ascii(data.decode("utf-8", "replace"))
 
 
@@ -185,11 +259,19 @@ def _geometry_to_arrays(g: Node):
     pvi = _arr(g, "PolygonVertexIndex")
     if verts is None or pvi is None:
         return None
+    if len(verts) % 3 or len(verts) == 0 or len(pvi) == 0:
+        return None
     verts = np.asarray(verts, np.float64).reshape(-1, 3)
+    if len(verts) > limits.MAX_VERTICES or len(pvi) > limits.MAX_TRIANGLES * 3:
+        raise FbxError("FBX: слишком много вершин/полигонов")
     pvi = np.asarray(pvi, np.int64)
     K = len(pvi)
     vidx = np.where(pvi < 0, ~pvi, pvi)
+    if vidx.min() < 0 or vidx.max() >= len(verts):
+        raise FbxError("FBX повреждён: индекс вершины вне диапазона")
     ends = np.nonzero(pvi < 0)[0]
+    if len(ends) == 0:
+        return None
     starts = np.concatenate([[0], ends[:-1] + 1])
     poly_of = np.repeat(np.arange(len(ends)), ends - starts + 1)
 
@@ -220,16 +302,30 @@ def _geometry_to_arrays(g: Node):
 
     nrm = layer("LayerElementNormal", 3, "Normals", "NormalsIndex")
     uv = layer("LayerElementUV", 2, "UV", "UVIndex")
-    # триангуляция веером в пространстве индексов «полигон-вершина»
-    tris = []
-    for s, e in zip(starts, ends):
-        for k in range(s + 1, e):
-            tris.append((s, k, k + 1))
-    return verts[vidx], nrm, uv, np.array(tris, np.int64).reshape(-1, 3), vidx
+    # триангуляция веером в пространстве индексов «полигон-вершина» (векторно)
+    ntri = np.maximum(ends - starts + 1 - 2, 0)
+    total = int(ntri.sum())
+    if total > limits.MAX_TRIANGLES:
+        raise FbxError(f"FBX: слишком много треугольников ({total})")
+    poly = np.repeat(np.arange(len(ends)), ntri)
+    k = np.arange(total) - np.repeat(np.cumsum(ntri) - ntri, ntri) + 1
+    tris = np.stack([starts[poly], starts[poly] + k, starts[poly] + k + 1], 1) if total else np.zeros((0, 3), np.int64)
+    return verts[vidx], nrm, uv, tris.astype(np.int64), vidx
 
 
 def load_fbx(path) -> Mesh:
-    data = Path(path).read_bytes()
+    """Загрузка FBX. Любые ошибки данных (обрезанный/повреждённый/вредоносный файл) → FbxError."""
+    try:
+        data = limits.read_limited(path, limits.MAX_FBX_FILE, "FBX")
+        return _load_fbx_data(data)
+    except FbxError:
+        raise
+    except (limits.LimitError, struct.error, IndexError, KeyError, zlib.error, ValueError, TypeError,
+            OverflowError, MemoryError, RecursionError, UnicodeError, AttributeError) as e:
+        raise FbxError(f"Не удалось прочитать FBX: {e or type(e).__name__}") from e
+
+
+def _load_fbx_data(data: bytes) -> Mesh:
     nodes = parse_fbx(data)
     objs = next((n for n in nodes if n.name == "Objects"), None)
     if objs is None:

@@ -124,6 +124,11 @@ class ClassNode:
 Node = Union[Property, ClassNode, Comment]
 
 
+# --------------------------------------------------------------- limits
+MAX_DEPTH = 64              # вложенность классов/массивов (значения синхронизированы с core/limits.py)
+MAX_TOKENS = 100_000
+
+
 # --------------------------------------------------------------- tokenizer
 _TOKEN = re.compile(r"""
     (?P<ws>\s+)
@@ -146,6 +151,8 @@ def _tokenize(src: str):
         kind, text = m.lastgroup, m.group()
         if kind != "ws":
             out.append((kind, text, line, col))
+            if len(out) > MAX_TOKENS:
+                raise RvmatParseError(f"Слишком много токенов (> {MAX_TOKENS})", line, col)
         nl = text.count("\n")
         if nl:
             line += nl
@@ -161,6 +168,7 @@ class _Parser:
     def __init__(self, src: str):
         self.t = _tokenize(src)
         self.i = 0
+        self.depth = 0
 
     def peek(self):
         return self.t[self.i]
@@ -174,6 +182,11 @@ class _Parser:
         k, v, ln, c = self.next()
         if v != text or k in ("str",):
             raise RvmatParseError(f"Ожидалось {text!r}, найдено {v or 'конец файла'!r}", ln, c)
+
+    def _enter(self, ln, c):
+        self.depth += 1
+        if self.depth > MAX_DEPTH:
+            raise RvmatParseError(f"Слишком глубокая вложенность (> {MAX_DEPTH})", ln, c)
 
     def parse_items(self, until_brace: bool) -> list[Node]:
         body: list[Node] = []
@@ -209,7 +222,9 @@ class _Parser:
             if k != "id":
                 raise RvmatParseError("Ожидалось имя базового класса", ln, c)
         self.expect("{")
+        self._enter(ln, c)
         body = self.parse_items(True)
+        self.depth -= 1
         self.expect("}")
         self.expect(";")
         return ClassNode(name, base, body)
@@ -238,13 +253,16 @@ class _Parser:
             return Value("ident", v)
         if k == "p" and v == "{":
             items: list[Value] = []
+            self._enter(ln, c)
             if self.peek()[1] == "}":
+                self.depth -= 1
                 self.next()
                 return Value("array", items=items)
             while True:
                 items.append(self.parse_value())
                 _, sep, ln2, c2 = self.next()
                 if sep == "}":
+                    self.depth -= 1
                     return Value("array", items=items)
                 if sep != ",":
                     raise RvmatParseError(f"Ожидалось ',' или '}}', найдено {sep!r}", ln2, c2)

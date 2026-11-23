@@ -7,6 +7,8 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import limits, safeio
+
 
 def app_dir() -> Path:
     if os.environ.get("RVMAT_STUDIO_HOME"):
@@ -32,6 +34,10 @@ class Settings:
     last_dir: str = ""
     geometry: str = ""
     renderer: str = "auto"        # auto | gl | cpu
+    trusted_exes: list = field(default_factory=list)   # exe, запуск которых пользователь подтвердил
+    texture_dirs: list = field(default_factory=list)   # папки с текстурами, добавленные пользователем явно
+    version: int = 1
+    _warnings: list = field(default_factory=list, repr=False, compare=False)
 
     @classmethod
     def path(cls) -> Path:
@@ -39,14 +45,49 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
+        """Неверные поля пропускаются (остаются значения по умолчанию), причины — в .warnings; файл не падает."""
+        st = cls()
         try:
-            d = json.loads(cls.path().read_text("utf-8"))
-            return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-        except (OSError, ValueError, TypeError):
-            return cls()
+            d = safeio.read_json(cls.path(), "settings.json")
+        except (OSError, safeio.DataError) as e:
+            if cls.path().exists():
+                st._warnings.append(f"settings.json не прочитан: {e}")
+            return st
+        if not isinstance(d, dict):
+            st._warnings.append("settings.json: ожидался объект")
+            return st
+        ver = d.get("version")
+        if isinstance(ver, int) and not isinstance(ver, bool) and ver > 1:
+            st._warnings.append("settings.json создан более новой версией программы")
+        for k, v in d.items():
+            if k not in cls.__dataclass_fields__ or k.startswith("_") or k == "version":
+                continue
+            default = getattr(st, k)
+            try:
+                if isinstance(default, str):
+                    v = safeio.as_str(v, k)
+                elif isinstance(default, int) and not isinstance(default, bool):
+                    v = safeio.as_int(v, k, default, 5, 86400)
+                elif isinstance(default, list):
+                    v = safeio.str_list(v, k, 200)
+                else:
+                    continue
+            except safeio.SchemaError as e:
+                st._warnings.append(str(e))
+                continue
+            setattr(st, k, v)
+        if st.renderer not in ("auto", "gl", "cpu"):
+            st._warnings.append(f"renderer={st.renderer!r} недопустим — использовано auto")
+            st.renderer = "auto"
+        return st
+
+    @property
+    def warnings(self) -> list:
+        return self._warnings
 
     def save(self):
-        self.path().write_text(json.dumps(asdict(self), ensure_ascii=False, indent=1), "utf-8")
+        d = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
+        safeio.atomic_write(self.path(), json.dumps(d, ensure_ascii=False, indent=1))
 
     def add_recent(self, p: str):
         self.recent = [p] + [r for r in self.recent if r != p][:9]

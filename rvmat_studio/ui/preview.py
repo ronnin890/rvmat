@@ -10,6 +10,7 @@ import numpy as np
 from ..core.meshes import get_shape
 import os
 
+from ..core.logs import log_exc
 from ..core import glrender
 from ..core.pick import pick_part_ray
 from ..core.render import RenderCache, RenderOptions, render, render_uv_layout
@@ -111,6 +112,7 @@ class PreviewView(ttk.Frame):
                 try:
                     self.after_cancel(a)
                 except Exception:
+                    log_exc("preview.shutdown")
                     pass
         self.mat_a = None
         if self._gl is not None:
@@ -186,6 +188,7 @@ class PreviewView(ttk.Frame):
                     img = compose(lambda m, parts: render(m, o, res, mesh, cache, parts))
                 self._q.put((gen, img, 2 if fast else 1, None))
             except Exception as e:                       # ошибка рендера не должна ронять окно
+                log_exc("preview.work")
                 self._q.put((gen, None, 1, e))
         threading.Thread(target=work, daemon=True).start()
 

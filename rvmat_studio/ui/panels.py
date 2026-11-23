@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
+from ..core.logs import log_exc
 from ..backend import ALL_STATES, Severity, State, kit_filename
 from ..backend.procedural import is_procedural, make_color, make_fresnel, parse_procedural
 from ..core import simple as S
@@ -210,6 +211,7 @@ class PresetsTab(ttk.Frame):
             try:
                 n = len(self.app.pm.import_from(f)); self.refresh(); messagebox.showinfo("Импорт", f"Импортировано: {n}", parent=self)
             except Exception as e:
+                log_exc("panels.imp")
                 messagebox.showwarning("Импорт", f"Ошибка: {e}", parent=self)
 
     def exp(self):

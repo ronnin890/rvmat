@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import limits
+
 
 @dataclass
 class Mesh:
@@ -212,12 +214,31 @@ def capsule_test(seg=36) -> Mesh:
     return parts_by_axis(Mesh(v, None, uv, f).finalize(), 1, "низ", "верх")
 
 
+class MeshError(ValueError):
+    pass
+
+
 def load_obj(path) -> Mesh:
+    """Загрузка OBJ. Любые ошибки данных (мусор, неверные индексы, слишком большой файл) → MeshError."""
+    try:
+        return _load_obj(path)
+    except MeshError:
+        raise
+    except (limits.LimitError, IndexError, KeyError, ValueError, TypeError, OverflowError, MemoryError, RecursionError) as e:
+        raise MeshError(f"Не удалось прочитать OBJ: {e or type(e).__name__}") from e
+
+
+def _load_obj(path) -> Mesh:
     """OBJ (в т.ч. на сотни тысяч треугольников): векторизованная сборка вершин и триангуляция веером.
     Части (селекшены) берутся из групп `g`/`o`, если их нет — из `usemtl`."""
     V, VT, VN, toks, counts, face_group, face_mtl = [], [], [], [], [], [], []
     group = mtl = None
-    for line in Path(path).read_text("utf-8", "ignore").splitlines():
+    text = limits.read_text_limited(path, limits.MAX_OBJ_FILE, "OBJ", "utf-8")
+    lines = text.splitlines()
+    del text
+    if len(lines) > limits.MAX_OBJ_LINES:
+        raise MeshError("OBJ: слишком много строк")
+    for line in lines:
         if not line or line[0] == "#":
             continue
         if line[0] == "v":
@@ -235,8 +256,11 @@ def load_obj(path) -> Mesh:
             group = line[2:].strip() or None
         elif line.startswith("usemtl"):
             mtl = line[6:].strip() or None
+    del lines
     if not V or not counts:
-        raise ValueError("OBJ не содержит геометрии")
+        raise MeshError("OBJ не содержит геометрии")
+    if len(V) > limits.MAX_VERTICES or sum(counts) > limits.MAX_TRIANGLES * 3:
+        raise MeshError("OBJ: слишком много вершин/граней")
     Va = np.array(V, np.float64)
     VTa = np.array(VT, np.float64) if VT else np.zeros((0, 2))
     VNa = np.array(VN, np.float64) if VN else np.zeros((0, 3))
@@ -246,6 +270,8 @@ def load_obj(path) -> Mesh:
     ni = np.fromiter((int(p[2]) if len(p) > 2 and p[2] else 0 for p in parts), np.int64, len(parts))
     fix = lambda a, n: np.where(a > 0, a - 1, np.where(a < 0, n + a, -1))     # 1-based/отрицательные индексы → 0-based, 0 → «нет»
     vi, ti, ni = fix(vi, len(Va)), fix(ti, len(VTa)), fix(ni, len(VNa))
+    if (vi < 0).any() or (vi >= len(Va)).any() or (ti >= max(len(VTa), 1)).any() or (ni >= max(len(VNa), 1)).any():
+        raise MeshError("OBJ повреждён: индекс вершины/UV/нормали вне диапазона")
     key = (vi * (len(VTa) + 1) + (ti + 1)) * (len(VNa) + 1) + (ni + 1)
     _, first, inv = np.unique(key, return_index=True, return_inverse=True)
     inv = inv.reshape(-1)

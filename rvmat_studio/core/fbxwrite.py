@@ -82,4 +82,5 @@ def write_fbx(mesh, path, name: str = "mesh"):
         data += _node(*t, start=len(data))
     data += b"\x00" * 13
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_bytes(bytes(data))
+    from .safeio import atomic_write
+    atomic_write(path, bytes(data))

@@ -10,8 +10,10 @@ from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 
+from ..core.logs import log_exc
 from ..backend import State
 from ..core import export as ex
+from ..core import dayztools
 from ..core.textures import channel_view, load_rgba, normal_report, probe
 from . import theme
 from .panels import np_photo
@@ -22,15 +24,7 @@ STATE_TITLES = {"base": "Основной (name.rvmat)", "damage": "Повреж
 
 
 def open_folder(path: str):
-    try:
-        if sys.platform == "win32":
-            os.startfile(path)                                                # type: ignore[attr-defined]
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", path])
-        else:
-            subprocess.Popen(["xdg-open", path])
-    except OSError:
-        pass
+    dayztools.open_folder(path)
 
 
 class Modal(tk.Toplevel):
@@ -175,6 +169,7 @@ class ExportDialog(Modal):
                 raise ValueError("Укажите имя меша")
             self._plan = plan = ex.plan_export(self.app.proj, o)
         except Exception as e:
+            log_exc("dialogs.update_plan")
             self._plan = None
             n.insert("end", str(e), "ERROR")
             t.configure(state="disabled"); n.configure(state="disabled"); self.go.state(["disabled"])
@@ -214,6 +209,8 @@ class ExportDialog(Modal):
             return
         if self._plan.existing and not self.over.get():
             messagebox.showwarning("Экспорт", "Некоторые файлы уже существуют. Отметьте перезапись или выберите другую папку.", parent=self)
+            return
+        if any(o.mode == "convert-tool" for o in self._plan.ops) and not self.app.confirm_tool("image_to_paa"):
             return
         self._running = True
         for w in (self.go,):
@@ -349,6 +346,7 @@ class TextureViewer(Modal):
         try:
             self.arr, self.fmt = load_rgba(path)
         except Exception as e:
+            log_exc("dialogs.__init__")
             self.arr = None
             self.info.insert("1.0", f"Ошибка: {e}")
             return

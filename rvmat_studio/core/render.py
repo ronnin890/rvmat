@@ -181,7 +181,7 @@ def project_mesh(mesh: Mesh, o: RenderOptions, W, H):
     R = _rot(o.yaw, o.pitch)
     P = mesh.v @ R.T
     N = mesh.n @ R.T
-    T = mesh.t @ R.T
+    T = mesh.get_tangents() @ R.T
     dist = 4.0 / max(o.zoom, 0.05)
     f = 1 / math.tan(math.radians(17.5))
     w = dist - P[:, 2]

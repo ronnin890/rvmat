@@ -74,7 +74,7 @@ def test_binary_fbx_versions_and_compression(tmp_path, version, compress):
     f = tmp_path / "q.fbx"
     f.write_bytes(build_fbx(version, compress))
     m = load_fbx(f)
-    assert len(m.f) == 2 and len(m.v) == 4 and m.uv.shape == (4, 2) and m.t.shape == (4, 3)
+    assert len(m.f) == 2 and len(m.v) == 4 and m.uv.shape == (4, 2) and m.get_tangents().shape == (4, 3)
     assert np.allclose(m.n, [0, 0, 1], atol=1e-5)
     assert set(np.round(m.uv[:, 1], 3)) == {0.0, 1.0}
     assert np.abs(m.v).max() == pytest.approx(1.0, abs=1e-5) or np.linalg.norm(m.v, axis=1).max() == pytest.approx(1.0, abs=1e-5)

@@ -308,7 +308,7 @@ def test_obj_import(tmp_path):
     f = tmp_path / "t.obj"
     f.write_text("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 2/2 3/3 4/4\n")
     m = load_obj(f)
-    assert len(m.f) == 2 and m.t.shape == (4, 3)
+    assert len(m.f) == 2 and m.get_tangents().shape == (4, 3)
     assert render(super_template(), RenderOptions(width=64, height=64), make_resolver(None), m).shape == (64, 64, 4)
     (tmp_path / "e.obj").write_text("# empty")
     with pytest.raises(ValueError):

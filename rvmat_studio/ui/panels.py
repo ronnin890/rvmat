@@ -85,7 +85,7 @@ class TexturesTab(ttk.Frame):
                 continue
             st = guess_stage(p)
             lab = "Base Color" if st == 0 else (f"Stage{st}" if st else "—")
-            arr = self.app.thumbs.get(p)
+            arr = self.app.thumbs.peek(p)
             kw = {}
             if arr is not None:
                 ph = self._photos.get(path) or np_photo(arr)
@@ -515,7 +515,7 @@ class StageEditor(ttk.Frame):
                 self.pg.pack_forget()
                 f = find(tex) if tex else None
                 if f:
-                    arr = thumbs.get(Path(f))
+                    arr = thumbs.peek(Path(f))
                     if arr is not None:
                         self._photo = np_photo(arr)
                         self.thumb.configure(image=self._photo, text="", width=96, height=96)

@@ -17,6 +17,8 @@ if not exist ".venv\Scripts\python.exe" (
   echo Первый запуск: устанавливаю numpy и Pillow...
   %PY% -m venv .venv || goto :err
   ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt || goto :err
+  echo Устанавливаю GPU-рендер ^(moderngl, ~1 МБ^)...
+  ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements-gl.txt || echo Не удалось поставить moderngl: предпросмотр будет работать на процессоре ^(медленнее на тяжёлых моделях^).
 )
 
 ".venv\Scripts\python.exe" -c "import tkinter" 2>nul || (

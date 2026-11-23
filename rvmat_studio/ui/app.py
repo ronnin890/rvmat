@@ -48,7 +48,7 @@ class StudioApp:
         main = ttk.PanedWindow(outer, orient="horizontal"); outer.add(main, weight=5)
         center = ttk.Frame(main)
         self._build_viewport_bar(center)
-        self.preview = PreviewView(center, on_pick=self._picked, on_status=self.toast)
+        self.preview = PreviewView(center, on_pick=self._picked, on_status=self.toast, renderer=self.settings.renderer)
         self.preview.pack(fill="both", expand=True)
         self.left = LeftPanel(main, self)
         self.props = PropsPanel(main, self)
@@ -63,7 +63,9 @@ class StudioApp:
         r.after(60, self._init_layout)
         r.protocol("WM_DELETE_WINDOW", self.close)
         self.toasts: list = []
-        self.log(f"DayZ RVMAT Studio {__version__} запущен")
+        self.log(f"DayZ RVMAT Studio {__version__} запущен · рендер: {self.preview.backend_info}")
+        self._thumb_ver = 0
+        self.root.after(400, self._poll_thumbs)
         self.flush()
         self._schedule_autosave()
 
@@ -97,7 +99,7 @@ class StudioApp:
         t.add_command(label="Настройки…", accelerator="Ctrl+,", command=self.open_settings)
         h = m(); mb.add_cascade(label="Справка", menu=h)
         h.add_command(label="Отличия предпросмотра от игры", command=lambda: messagebox.showinfo("Отличия от игры", "\n\n".join("• " + d for d in DIFFERENCES), parent=self.root))
-        h.add_command(label="О программе", command=lambda: messagebox.showinfo("DayZ RVMAT Studio", f"DayZ RVMAT Studio {__version__}\nГенератор и редактор RVMAT для DayZ.", parent=self.root))
+        h.add_command(label="О программе", command=lambda: messagebox.showinfo("DayZ RVMAT Studio", f"DayZ RVMAT Studio {__version__}\nГенератор и редактор RVMAT для DayZ.\n\nРендер: {self.preview.backend_info}", parent=self.root))
         r.configure(menu=mb)
         self.menubar = mb
         self._fill_recent()
@@ -161,6 +163,16 @@ class StudioApp:
             self.outer.sashpos(0, int(H * 0.74))
         except tk.TclError:
             pass
+
+    def _poll_thumbs(self):
+        """Миниатюры считаются в фоне: когда появились новые — обновить списки."""
+        if self._closing:
+            return
+        if self.thumbs.version != self._thumb_ver:
+            self._thumb_ver = self.thumbs.version
+            self.left.tex.refresh()
+            self.props.refresh()
+        self.root.after(400, self._poll_thumbs)
 
     # ------------------------------------------------------------ вспомогательное
     def log(self, msg: str):
@@ -245,11 +257,15 @@ class StudioApp:
         cmp_state = State(self.cmp_state.get()) if self.cmp_on.get() else None
         b = p.effective(cmp_state) if cmp_state else None
         o = self.preview.opts
-        base = self.resolver(p.base_color) if p.base_color else None
+        gl = self.preview.backend == "gl"
+        base = (p.base_color or None) if gl else (self.resolver(p.base_color) if p.base_color else None)   # GPU берёт файл в полном размере
         o.base_color = base
         o.normal_strength = p.slot.normal_strength
         s4 = a.stage(4)
-        self.preview.uv_bg = base if base is not None else (self.resolver(s4.texture) if s4 and s4.texture else None)
+        uvb = self.resolver(p.base_color) if p.base_color else None
+        if uvb is None and s4 and s4.texture:
+            uvb = self.resolver(s4.texture)
+        self.preview.uv_bg = uvb
         self.preview.set_materials(a, b, self.resolver, self._parts_mats(st), self._parts_mats(cmp_state) if cmp_state else None)
 
     def _parts_mats(self, state):
@@ -259,7 +275,8 @@ class StudioApp:
         out = {}
         for i, name in enumerate(mesh.part_names):
             sl = self.proj.slot_for_part(name)
-            out[i] = (self.proj.slot_effective(sl, state), self.resolver(sl.base_color) if sl.base_color else None, sl.normal_strength)
+            base = (sl.base_color or None) if self.preview.backend == "gl" else (self.resolver(sl.base_color) if sl.base_color else None)
+            out[i] = (self.proj.slot_effective(sl, state), base, sl.normal_strength)
         return out
 
     def set_stage_visible(self, idx, on):

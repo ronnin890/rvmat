@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.26", "Pillow>=10.0"]
 
 [project.optional-dependencies]
+gl = ["moderngl>=5.8"]
 dev = ["pytest"]
 
 [project.scripts]

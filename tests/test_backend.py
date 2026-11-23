@@ -119,3 +119,16 @@ def test_save_creates_backup(tmp_path):
     m.set_scalar("specularPower", 1)
     m.save(p)
     assert (tmp_path / "a.rvmat.bak").read_text() != p.read_text()
+
+
+def test_validator_accepts_source_image_instead_of_paa(tmp_path):
+    from rvmat_studio.backend import Severity, validate
+    from rvmat_studio.backend.model import Material
+    (tmp_path / "dz").mkdir()
+    (tmp_path / "dz" / "x_as.png").write_bytes(b"png")
+    m = Material.from_text((Path(__file__).parent / "samples" / "eyemask_damage.rvmat").read_text())
+    m.stage(4).texture = "dz\\X_AS.paa"                                    # регистр не важен, вместо .paa лежит .png
+    codes = {i.code: i for i in validate(m, tmp_path) if i.location == "Stage4.texture"}
+    assert "W233" not in codes and codes["I233"].severity == Severity.INFO
+    m.stage(4).texture = "dz\\nothing.paa"
+    assert any(i.code == "W233" for i in validate(m, tmp_path))

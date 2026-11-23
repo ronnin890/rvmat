@@ -35,13 +35,21 @@ def normalize_game_path(tex: str) -> str:
     return tex.replace("/", "\\").lstrip("\\").lower()
 
 
-def resolve_physical(tex: str, project_root: Path) -> Optional[Path]:
-    """Игровой путь -> физический путь под корнем проекта/P:. Регистр игнорируется."""
+SOURCE_EXTS = (".png", ".tga", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def resolve_physical(tex: str, project_root: Path, allow_source: bool = False) -> Optional[Path]:
+    """Игровой путь -> физический путь под корнем проекта/P:. Регистр игнорируется.
+    allow_source: вместо .paa допускается исходник (png/tga/…) с тем же именем."""
     cur = project_root
-    for part in tex.replace("/", "\\").strip("\\").split("\\"):
+    parts = tex.replace("/", "\\").strip("\\").split("\\")
+    for i, part in enumerate(parts):
         if not cur.is_dir():
             return None
         hit = next((c for c in cur.iterdir() if c.name.lower() == part.lower()), None)
+        if hit is None and allow_source and i == len(parts) - 1:
+            stem = Path(part).stem.lower()
+            hit = next((c for c in cur.iterdir() if c.stem.lower() == stem and c.suffix.lower() in SOURCE_EXTS), None)
         if hit is None:
             return None
         cur = hit
@@ -124,7 +132,11 @@ def _check_path(tex: str, base: str, root: Optional[Path], add):
         add(Severity.WARNING, "W232", f"Игра ожидает .paa (найдено {ext or 'без расширения'})", loc)
     if root is not None:
         if resolve_physical(tex, root) is None:
-            add(Severity.WARNING, "W233", f"Файл не найден в {root}", loc)
+            src = resolve_physical(tex, root, allow_source=True)
+            if src is not None:
+                add(Severity.INFO, "I233", f"Найден исходник {src.name}: при экспорте будет сконвертирован в PAA", loc)
+            else:
+                add(Severity.WARNING, "W233", f"Файл не найден в {root}", loc)
 
 
 def validate_kit(kit: dict[str, Material], name: str,

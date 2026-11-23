@@ -383,3 +383,37 @@ def test_export_dialog_fbx_disabled_without_model(app, tmp_path):
 def test_selftest_runs():
     from rvmat_studio.ui.selftest import selftest
     assert selftest() == 0
+
+
+# ------------------------------------------------------------------ выбор рендера
+def test_renderer_selection_and_fallback(app, monkeypatch):
+    from rvmat_studio.core import glrender
+    from rvmat_studio.ui.preview import PreviewView
+    monkeypatch.delenv("RVMAT_RENDERER", raising=False)
+    cpu = PreviewView(app.root, renderer="cpu")
+    assert cpu.backend == "cpu" and "процессор" in cpu.backend_info
+    cpu.shutdown(); cpu.destroy()
+    monkeypatch.setattr(glrender, "moderngl", None)                         # нет библиотеки — тихий откат на процессор
+    auto = PreviewView(app.root, renderer="auto")
+    assert auto.backend == "cpu" and "moderngl" in auto.backend_info
+    auto.shutdown(); auto.destroy()
+    monkeypatch.setenv("RVMAT_RENDERER", "cpu")                              # переменная окружения важнее настроек
+    forced = PreviewView(app.root, renderer="gl")
+    assert forced.backend == "cpu"
+    forced.shutdown(); forced.destroy()
+
+
+def test_settings_dialog_has_renderer_choice(app):
+    s = Settings()
+    d = dialogs.SettingsDialog(app.root, s)
+    d.rend.current(2); d._ok()
+    assert s.renderer == "cpu"
+
+
+def test_huge_texture_thumbnail_does_not_block_ui(app, tmp_path):
+    big = np.zeros((4096, 4096, 4), np.uint8); big[...] = (90, 120, 200, 255)
+    f = tmp_path / "huge_as.png"; Image.fromarray(big).save(f)
+    app.thumbs.version, t0 = 0, time.time()
+    assert app.thumbs.peek(f) is None and time.time() - t0 < 0.5             # peek мгновенный: миниатюра считается в фоне
+    assert pump(app, lambda: app.thumbs.version > 0, 30)
+    assert app.thumbs.peek(f) is not None

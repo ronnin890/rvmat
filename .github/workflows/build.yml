@@ -11,10 +11,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk
-      - run: pip install -r requirements.txt pytest
+      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libgl1-mesa-dri
+      - run: pip install -r requirements.txt -r requirements-gl.txt pytest
       - name: Тесты (включая интерфейс tkinter под Xvfb)
         run: xvfb-run -a python -m pytest -q
+        env: { LIBGL_ALWAYS_SOFTWARE: "1" }
       - name: Самопроверка приложения
         run: xvfb-run -a python -m rvmat_studio --selftest
 
@@ -24,6 +25,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt -r requirements-gl.txt pytest
       - run: python -m pytest -q
       - run: python -m rvmat_studio --selftest

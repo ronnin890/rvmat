@@ -31,6 +31,7 @@ class Settings:
     recent: list = field(default_factory=list)
     last_dir: str = ""
     geometry: str = ""
+    renderer: str = "auto"        # auto | gl | cpu
 
     @classmethod
     def path(cls) -> Path:

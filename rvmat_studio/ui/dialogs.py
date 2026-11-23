@@ -283,7 +283,7 @@ class SettingsDialog(Modal):
               ("gproj", "Файл проекта dayz.gproj (Workbench)", "file"), ("p_drive", "P: Drive", "dir"), ("project_root", "Корень проекта по умолчанию", "dir"))
 
     def __init__(self, parent, settings):
-        super().__init__(parent, "Настройки и интеграция с DayZ Tools", 640, 330)
+        super().__init__(parent, "Настройки и интеграция с DayZ Tools", 700, 380)
         self.s = settings
         self.vars = {}
         f = ttk.Frame(self); f.pack(fill="both", expand=True, padx=12, pady=10)
@@ -295,7 +295,12 @@ class SettingsDialog(Modal):
         r = len(self.FIELDS)
         ttk.Label(f, text="Автосохранение, с").grid(row=r, column=0, sticky="w", pady=3)
         self.auto = tk.StringVar(value=str(settings.autosave_seconds)); ttk.Spinbox(f, from_=10, to=3600, textvariable=self.auto, width=8).grid(row=r, column=1, sticky="w", padx=6)
-        ttk.Button(f, text="Найти DayZ Tools автоматически", command=self._find).grid(row=r + 1, column=1, sticky="w", padx=6, pady=8)
+        ttk.Label(f, text="Рендер предпросмотра").grid(row=r + 1, column=0, sticky="w", pady=3)
+        self.rend = ttk.Combobox(f, state="readonly", width=32, values=["Авто (GPU, если доступен)", "Только GPU (OpenGL)", "Только процессор"])
+        self.rend.grid(row=r + 1, column=1, sticky="w", padx=6)
+        self.rend.current({"auto": 0, "gl": 1, "cpu": 2}.get(settings.renderer, 0))
+        ttk.Label(f, text="(применяется после перезапуска)", style="Hint.TLabel").grid(row=r + 1, column=2, sticky="w")
+        ttk.Button(f, text="Найти DayZ Tools автоматически", command=self._find).grid(row=r + 2, column=1, sticky="w", padx=6, pady=8)
         f.columnconfigure(1, weight=1)
         b = ttk.Frame(self); b.pack(fill="x", padx=12, pady=(0, 10))
         ttk.Button(b, text="Отмена", command=self.destroy).pack(side="right", padx=(6, 0))
@@ -319,6 +324,7 @@ class SettingsDialog(Modal):
             setattr(self.s, k, v.get().strip())
         try:
             self.s.autosave_seconds = max(10, int(self.auto.get()))
+            self.s.renderer = ["auto", "gl", "cpu"][self.rend.current()]
         except ValueError:
             pass
         self.ok = True

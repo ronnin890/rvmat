@@ -40,6 +40,11 @@ class Mesh:
             out.append((int(idx[0]), len(idx)) if len(idx) else (0, 0))
         return out
 
+    def get_tangents(self) -> np.ndarray:
+        if self.t is None:
+            self.t = tangents(self)
+        return self.t
+
     def finalize(self) -> "Mesh":
         self.v = self.v.astype(np.float32)
         c = (self.v.max(0) + self.v.min(0)) / 2
@@ -50,7 +55,7 @@ class Mesh:
         if self.n is None or len(self.n) != len(self.v):
             self.n = vertex_normals(self.v, self.f)
         self.n = (self.n / np.maximum(np.linalg.norm(self.n, axis=1, keepdims=True), 1e-8)).astype(np.float32)
-        self.t = tangents(self)
+        self.t = None                     # тангенты нужны только CPU-рендеру и считаются по запросу (get_tangents)
         return self
 
 
@@ -208,64 +213,73 @@ def capsule_test(seg=36) -> Mesh:
 
 
 def load_obj(path) -> Mesh:
-    """OBJ: части берутся из групп `g`/`o` (если их нет — из `usemtl`)."""
-    V, VT, VN, faces, face_group, face_mtl = [], [], [], [], [], []
+    """OBJ (в т.ч. на сотни тысяч треугольников): векторизованная сборка вершин и триангуляция веером.
+    Части (селекшены) берутся из групп `g`/`o`, если их нет — из `usemtl`."""
+    V, VT, VN, toks, counts, face_group, face_mtl = [], [], [], [], [], [], []
     group = mtl = None
     for line in Path(path).read_text("utf-8", "ignore").splitlines():
-        p = line.split(None, 1)
-        if not p:
+        if not line or line[0] == "#":
             continue
-        k = p[0]
-        rest = p[1].strip() if len(p) > 1 else ""
-        if k == "v":
-            V.append([float(x) for x in rest.split()[:3]])
-        elif k == "vt":
-            VT.append([float(x) for x in rest.split()[:2]])
-        elif k == "vn":
-            VN.append([float(x) for x in rest.split()[:3]])
-        elif k in ("g", "o"):
-            group = rest or None
-        elif k == "usemtl":
-            mtl = rest or None
-        elif k == "f":
-            faces.append([tuple((int(x) if x else 0) for x in (tok.split("/") + ["", ""])[:3]) for tok in rest.split()])
-            face_group.append(group)
-            face_mtl.append(mtl)
-    if not V or not faces:
+        if line[0] == "v":
+            c = line[1:2]
+            if c == " ":
+                V.append(line[2:].split()[:3])
+            elif c == "t":
+                VT.append(line[3:].split()[:2])
+            elif c == "n":
+                VN.append(line[3:].split()[:3])
+        elif line[0] == "f" and line[1:2] in (" ", "\t"):
+            t = line[2:].split()
+            toks.extend(t); counts.append(len(t)); face_group.append(group); face_mtl.append(mtl)
+        elif line.startswith(("g ", "o ")):
+            group = line[2:].strip() or None
+        elif line.startswith("usemtl"):
+            mtl = line[6:].strip() or None
+    if not V or not counts:
         raise ValueError("OBJ не содержит геометрии")
-    key, verts, norms, uvs, tri, tri_src = {}, [], [], [], [], []
-    def idx(i, n):
-        return i - 1 if i > 0 else n + i
-    for fi, fc in enumerate(faces):
-        ids = []
-        for (vi, ti, ni) in fc:
-            k = (vi, ti, ni)
-            if k not in key:
-                key[k] = len(verts)
-                verts.append(V[idx(vi, len(V))])
-                uvs.append([VT[idx(ti, len(VT))][0], 1 - VT[idx(ti, len(VT))][1]] if ti and VT else [0, 0])
-                norms.append(VN[idx(ni, len(VN))] if ni and VN else [0, 0, 0])
-            ids.append(key[k])
-        for i in range(1, len(ids) - 1):
-            tri.append((ids[0], ids[i], ids[i + 1]))
-            tri_src.append(fi)
-    v = np.array(verts, np.float32)
-    n = np.array(norms, np.float32)
-    f = np.array(tri)
-    if not np.abs(n).sum():
-        n = None
-    m = Mesh(v, n, np.array(uvs, np.float32), f)
+    Va = np.array(V, np.float64)
+    VTa = np.array(VT, np.float64) if VT else np.zeros((0, 2))
+    VNa = np.array(VN, np.float64) if VN else np.zeros((0, 3))
+    parts = [t.split("/") for t in toks]
+    vi = np.fromiter((int(p[0]) for p in parts), np.int64, len(parts))
+    ti = np.fromiter((int(p[1]) if len(p) > 1 and p[1] else 0 for p in parts), np.int64, len(parts))
+    ni = np.fromiter((int(p[2]) if len(p) > 2 and p[2] else 0 for p in parts), np.int64, len(parts))
+    fix = lambda a, n: np.where(a > 0, a - 1, np.where(a < 0, n + a, -1))     # 1-based/отрицательные индексы → 0-based, 0 → «нет»
+    vi, ti, ni = fix(vi, len(Va)), fix(ti, len(VTa)), fix(ni, len(VNa))
+    key = (vi * (len(VTa) + 1) + (ti + 1)) * (len(VNa) + 1) + (ni + 1)
+    _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+    inv = inv.reshape(-1)
+    v = Va[vi[first]].astype(np.float32)
+    uv = np.zeros((len(first), 2), np.float32)
+    has_t = ti[first] >= 0
+    if VTa.size and has_t.any():
+        uv[has_t] = VTa[ti[first][has_t]]
+        uv[:, 1] = np.where(has_t, 1 - uv[:, 1], 0)
+    n = np.zeros((len(first), 3), np.float32)
+    has_n = ni[first] >= 0
+    if VNa.size and has_n.any():
+        n[has_n] = VNa[ni[first][has_n]]
+    # триангуляция веером: грань из c вершин -> c-2 треугольника
+    c = np.asarray(counts, np.int64)
+    start = np.concatenate([[0], np.cumsum(c)[:-1]])
+    ntri = np.maximum(c - 2, 0)
+    face_of = np.repeat(np.arange(len(c)), ntri)
+    k = np.arange(ntri.sum()) - np.repeat(np.cumsum(ntri) - ntri, ntri)
+    f = np.stack([inv[start[face_of]], inv[start[face_of] + k + 1], inv[start[face_of] + k + 2]], 1)
+    m = Mesh(v, n if np.abs(n).sum() else None, uv, f.astype(np.int64))
     labels = face_group if any(face_group) else face_mtl
+    m.finalize()
     if any(labels):
-        names, fp = [], []
-        for fi in tri_src:
-            nm = labels[fi] or "(без группы)"
-            if nm not in names:
-                names.append(nm)
-            fp.append(names.index(nm))
-        m.finalize()
-        return m.set_parts(fp, names) if len(names) > 1 else m
-    return m.finalize()
+        names, index = [], {}
+        per_face = np.empty(len(c), np.int32)
+        for i, lab in enumerate(labels):
+            lab = lab or "(без группы)"
+            if lab not in index:
+                index[lab] = len(names); names.append(lab)
+            per_face[i] = index[lab]
+        if len(names) > 1:
+            m.set_parts(per_face[face_of], names)
+    return m
 
 
 SHAPES = {"Сфера": sphere, "Куб": cube, "Цилиндр": cylinder, "Плоскость": plane, "Тор": torus,

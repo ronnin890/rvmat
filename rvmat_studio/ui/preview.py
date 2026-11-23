@@ -8,21 +8,45 @@ from tkinter import ttk
 import numpy as np
 
 from ..core.meshes import get_shape
-from ..core.render import RenderCache, RenderOptions, pick_part, render, render_uv_layout
+import os
+
+from ..core import glrender
+from ..core.pick import pick_part_ray
+from ..core.render import RenderCache, RenderOptions, render, render_uv_layout
+
+
+try:
+    from PIL import Image, ImageTk
+except ImportError:                                           # без ImageTk — PPM через Tcl (медленнее)
+    ImageTk = None
 
 
 def to_photo(rgba: np.ndarray, zoom: int = 1) -> tk.PhotoImage:
     h, w = rgba.shape[:2]
-    p = tk.PhotoImage(data=b"P6 %d %d 255\n" % (w, h) + np.ascontiguousarray(rgba[:, :, :3]).tobytes())
+    if ImageTk is not None:
+        p = ImageTk.PhotoImage(Image.fromarray(np.ascontiguousarray(rgba[:, :, :3]), "RGB"))
+    else:
+        p = tk.PhotoImage(data=b"P6 %d %d 255\n" % (w, h) + np.ascontiguousarray(rgba[:, :, :3]).tobytes())
     return p.zoom(zoom) if zoom > 1 else p
 
 
 class PreviewView(ttk.Frame):
     HINT = "ЛКМ — вращение · ПКМ — сдвиг · колесо — масштаб · клик по модели — выбор части · приближённый рендер, не движок DayZ"
 
-    def __init__(self, parent, on_pick=None, on_status=None):
+    def __init__(self, parent, on_pick=None, on_status=None, renderer="auto"):
         super().__init__(parent)
         self.on_pick, self.on_status = on_pick, on_status
+        self.backend, self.backend_info, self._gl = "cpu", "программный рендер (процессор)", None
+        mode = os.environ.get("RVMAT_RENDERER") or renderer
+        if mode in ("auto", "gl") and glrender.available():
+            g = glrender.GLThread()
+            g.ready.wait(15)
+            if g.renderer is not None:
+                self._gl, self.backend, self.backend_info = g, "gl", f"GPU: {g.renderer.info}"
+            else:
+                self.backend_info = f"программный рендер (GPU недоступен: {g.error})"
+        elif mode in ("auto", "gl"):
+            self.backend_info = "программный рендер (moderngl не установлен)"
         self.canvas = tk.Canvas(self, bg="#000", highlightthickness=0, cursor="fleur")
         self.canvas.pack(fill="both", expand=True)
         self._item = self.canvas.create_image(0, 0, anchor="nw")
@@ -89,6 +113,9 @@ class PreviewView(ttk.Frame):
                 except Exception:
                     pass
         self.mat_a = None
+        if self._gl is not None:
+            self._gl.stop()
+            self._gl = None
 
     def request(self, interactive=False):
         """Сначала быстрый кадр (1×, при перетаскивании — половинное разрешение), через паузу — качественный (2×)."""
@@ -124,21 +151,39 @@ class PreviewView(ttk.Frame):
         o.hdri = self.hdri
         cmp = self.mat_b is not None
         w = max(W // (2 if cmp else 1), 64)
-        fast = self._interacting
+        gl = self.backend == "gl"
+        fast = self._interacting and not gl                      # на GPU всегда полное разрешение (MSAA 4×)
         scale = 0.5 if fast else 1.0
         o.width, o.height = max(int(w * scale), 32), max(int(H * scale), 32)
-        o.ssaa = 2 if (self._quality and not fast) else 1
+        o.ssaa = 2 if (self._quality and not fast and not gl) else 1
         a, b, res, mesh = self.mat_a, self.mat_b, self.resolver, self.current_mesh()
         pa, pb, cache, show_uv, uv_bg = self.parts_a, self.parts_b, self._cache, self.show_uv, self.uv_bg
+
+        find = self.resolver.find if hasattr(self.resolver, "find") else (lambda t: None)
+
+        def compose(renderer_fn):
+            img = renderer_fn(a, pa)
+            if b is not None:
+                img = np.concatenate([img, renderer_fn(b, pb)], axis=1)
+            return img
+
+        if gl:
+            def job(r):
+                if show_uv:
+                    return render_uv_layout(mesh, 512, uv_bg)
+                return compose(lambda m, parts: r.render(m, o, find, mesh, parts))
+
+            def done(box):
+                self._q.put((gen, box.get("result"), 1, box.get("error")))
+            self._gl.submit(job, done)
+            return
 
         def work():
             try:
                 if show_uv:
                     img = render_uv_layout(mesh, 512, uv_bg)
                 else:
-                    img = render(a, o, res, mesh, cache, pa)
-                    if b is not None:
-                        img = np.concatenate([img, render(b, o, res, mesh, cache, pb)], axis=1)
+                    img = compose(lambda m, parts: render(m, o, res, mesh, cache, parts))
                 self._q.put((gen, img, 2 if fast else 1, None))
             except Exception as e:                       # ошибка рендера не должна ронять окно
                 self._q.put((gen, None, 1, e))
@@ -177,6 +222,9 @@ class PreviewView(ttk.Frame):
         o.stages_on = dict(self.opts.stages_on)
         o.hdri = self.hdri
         o.width, o.height = self._size()
+        if self.backend == "gl":
+            find, mesh, a, pa = self.resolver.find, self.current_mesh(), self.mat_a, self.parts_a
+            return self._gl.call(lambda r: r.render(a, o, find, mesh, pa))
         return render(self.mat_a, o, self.resolver, self.current_mesh(), RenderCache(), self.parts_a)
 
     # ---- мышь
@@ -215,8 +263,7 @@ class PreviewView(ttk.Frame):
         if self.mat_b is not None:
             W = W // 2
             x = x % max(W, 1)
-        W2, H2 = max(W // 2, 32), max(H // 2, 32)
-        part = pick_part(mesh, copy.copy(self.opts), W2, H2, x * W2 / max(W, 1), y * H2 / max(H, 1))
+        part = pick_part_ray(mesh, copy.copy(self.opts), W, H, x, y)
         if self.on_pick:
             self.on_pick(part)
         return part

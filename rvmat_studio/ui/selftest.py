@@ -20,7 +20,8 @@ def selftest() -> int:
     plan = ex.plan_export(app.proj, {"out_root": str(out), "mesh_name": "selftest", "states": ["base", "damage", "destruct"], "fbx": False})
     res = ex.run_export(plan)
     assert not res.errors and len(res.written) == 3, res.errors
+    backend = app.preview.backend_info
     app.proj.dirty = False
     app.close()
-    print("SELFTEST OK")
+    print(f"SELFTEST OK (рендер: {backend})")
     return 0

@@ -107,13 +107,27 @@ def thumbnail(path, size: int = 96) -> np.ndarray:
 
 
 class ThumbCache:
+    """Кэш миниатюр. get() — синхронно; peek() — без блокировки: если миниатюры нет, её считает фоновый поток
+    (текстуры 4K/8K не подвешивают окно), а `version` растёт, когда появились новые."""
+
     def __init__(self, size=96):
+        import threading
         self.size, self._c = size, {}
+        self.version = 0
+        self._todo: list = []
+        self._lock = threading.Lock()
+        self._worker = None
+
+    @staticmethod
+    def _key(path):
+        try:
+            return (str(path), Path(path).stat().st_mtime_ns)
+        except OSError:
+            return None
 
     def get(self, path: Path) -> Optional[np.ndarray]:
-        try:
-            key = (str(path), path.stat().st_mtime_ns)
-        except OSError:
+        key = self._key(path)
+        if key is None:
             return None
         if key not in self._c:
             try:
@@ -122,4 +136,30 @@ class ThumbCache:
                 self._c[key] = None
         return self._c[key]
 
+    def peek(self, path: Path) -> Optional[np.ndarray]:
+        key = self._key(path)
+        if key is None:
+            return None
+        if key in self._c:
+            return self._c[key]
+        with self._lock:
+            if all(k != key for _, k in self._todo):
+                self._todo.append((Path(path), key))
+            if self._worker is None or not self._worker.is_alive():
+                import threading
+                self._worker = threading.Thread(target=self._run, daemon=True)
+                self._worker.start()
+        return None
 
+    def _run(self):
+        while True:
+            with self._lock:
+                if not self._todo:
+                    return
+                path, key = self._todo.pop(0)
+            try:
+                arr = thumbnail(path, self.size)
+            except Exception:
+                arr = None
+            self._c[key] = arr
+            self.version += 1

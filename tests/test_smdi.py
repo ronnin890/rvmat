@@ -2,7 +2,6 @@
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication
 
 from rvmat_studio.core.meshes import get_shape
 from rvmat_studio.core.presets import super_template
@@ -82,21 +81,6 @@ def test_no_smdi_means_plain_rvmat_values(tmp_path):
     assert mad(a, render(m2, RenderOptions(**O), r2)) < 0.5            # SMDI из единиц = «без карты»
 
 
-def test_gl_matches_cpu_for_new_smdi_and_as(tmp_path):
-    from rvmat_studio.core import gl_render as G
-    QApplication.instance() or QApplication([])
-    if not G.gl_available():
-        pytest.skip("OpenGL недоступен")
-    m, res = scene(tmp_path, smdi=[255, 180, 90, 255], as_=[255, 90, 255, 255], power=60)
-    g = G.GLOffscreen()
-    try:
-        for view in ("final", "specular", "gloss", "metal", "ao"):
-            o = RenderOptions(view=view, **O)
-            assert mad(g.render(m, o, res, samples=0), render(m, o, res)) < 6.0, view
-    finally:
-        g.close()
-
-
 # ------------------------------------------------------------------ отражения и сохранение энергии
 def test_glossy_metal_surface_is_bright_reflection_not_albedo(tmp_path):
     """Блестящая поверхность (G высокий) со «скучным» тёмным альбедо выглядит светлее за счёт отражения окружения;
@@ -127,16 +111,3 @@ def test_rough_gloss_blurs_reflection(tmp_path):
     assert mad(a, b) > 1.0
 
 
-def test_gl_matches_cpu_with_env_gain(tmp_path):
-    from rvmat_studio.core import gl_render as G
-    QApplication.instance() or QApplication([])
-    if not G.gl_available():
-        pytest.skip("OpenGL недоступен")
-    m, res = scene(tmp_path, smdi=[255, 220, 100, 255], as_=[255, 120, 255, 255], power=50)
-    g = G.GLOffscreen()
-    try:
-        for gain in (0.0, 1.0, 4.0):
-            o = RenderOptions(width=160, height=160, env_gain=gain)
-            assert mad(g.render(m, o, res, samples=0), render(m, o, res)) < 6.0, gain
-    finally:
-        g.close()

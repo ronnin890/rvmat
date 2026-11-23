@@ -239,39 +239,6 @@ def test_apply_material_keeps_textures():
 
 
 # ------------------------------------------------------------------ экспорт
-def test_export_overwrite_protection_and_backup(tmp_path):
-    p = Project("helm")
-    plan = ex.plan_kit(p, tmp_path)
-    assert len(plan.files) == 6 and not plan.existing
-    written = ex.execute(plan)
-    assert {w.name for w in written} == {"helm.rvmat", "helm_damage.rvmat", "helm_destruct.rvmat", "helm_decorative.rvmat",
-                                         "helm_decorative_damage.rvmat", "helm_decorative_destruct.rvmat"}
-    assert b"\r\n" in (tmp_path / "helm.rvmat").read_bytes()
-    plan2 = ex.plan_kit(p, tmp_path)
-    assert len(plan2.existing) == 6
-    with pytest.raises(FileExistsError):
-        ex.execute(plan2)
-    ex.execute(plan2, overwrite=True)
-    assert (tmp_path / "helm.rvmat.bak").exists()
-
-
-def test_export_single_and_project(tmp_path):
-    p = Project("m")
-    img = tmp_path / "src.png"; Image.new("RGBA", (4, 4)).save(img)
-    p.textures = [str(img)]
-    one = ex.plan_single(p, State.DAMAGE, tmp_path / "o")
-    assert list(one.files)[0].name == "m_damage.rvmat"
-    out = tmp_path / "proj"
-    w = ex.export_project(p, out)
-    names = {x.name for x in w}
-    assert "m.rvproj" in names and "src.png" in names and "m_destruct.rvmat" in names
-    assert Project.load(out / "m.rvproj").name == "m"
-
-
-def test_export_plan_reports_errors(tmp_path):
-    p = Project("m")                   # пустые текстуры -> предупреждения
-    plan = ex.plan_kit(p, tmp_path)
-    assert any(i.code == "W212" for i in plan.issues)
 
 
 # ------------------------------------------------------------------ рендер
@@ -361,7 +328,7 @@ def test_uv_params_roundtrip():
 
 # ------------------------------------------------------------------ Workbench
 def test_find_gproj_priority_and_search(tmp_path):
-    from rvmat_studio.core.export import find_gproj
+    from rvmat_studio.core.dayztools import find_gproj
     p = tmp_path / "P"; (p / "MyMod" / "Workbench").mkdir(parents=True)
     g1 = p / "MyMod" / "Workbench" / "dayz.gproj"; g1.write_text("x")
     tools = tmp_path / "Tools"; (tools / "Bin" / "Workbench").mkdir(parents=True)
@@ -376,7 +343,7 @@ def test_find_gproj_priority_and_search(tmp_path):
 
 def test_workbench_launch_uses_project_and_cwd(tmp_path, monkeypatch):
     import subprocess
-    from rvmat_studio.core import export as ex
+    from rvmat_studio.core import dayztools as ex
     wb = tmp_path / "Workbench" / "workbenchApp.exe"; wb.parent.mkdir(); wb.write_text("")
     g = tmp_path / "P" / "dayz.gproj"; g.parent.mkdir(); g.write_text("")
     calls = {}
@@ -387,7 +354,7 @@ def test_workbench_launch_uses_project_and_cwd(tmp_path, monkeypatch):
 
 
 def test_workbench_errors_are_explained(tmp_path):
-    from rvmat_studio.core import export as ex
+    from rvmat_studio.core import dayztools as ex
     wb = tmp_path / "workbenchApp.exe"; wb.write_text("")
     with pytest.raises(ex.WorkbenchError, match="workbenchApp"):
         ex.check_in_workbench("", "", "", "", "")

@@ -1,4 +1,4 @@
-"""Пользовательские настройки (JSON) и пути интеграции с DayZ Tools."""
+"""Пользовательские настройки (JSON)."""
 from __future__ import annotations
 
 import json
@@ -28,13 +28,9 @@ class Settings:
     p_drive: str = "P:\\"
     project_root: str = ""
     autosave_seconds: int = 60
-    window_state: str = ""        # base64 QMainWindow.saveState
-    geometry: str = ""
     recent: list = field(default_factory=list)
-    reflect_gain: float = 1.0     # сила отражений окружения в превью (калибровка); прежний ключ env_gain (2.5) устарел
-    renderer: str = "auto"       # auto | gl | cpu
-    lighting: str = "Студия"
     last_dir: str = ""
+    geometry: str = ""
 
     @classmethod
     def path(cls) -> Path:
@@ -54,17 +50,15 @@ class Settings:
     def add_recent(self, p: str):
         self.recent = [p] + [r for r in self.recent if r != p][:9]
 
-    def find_tools(self):
-        """Попытка найти DayZ Tools в стандартных местах Steam."""
-        cands = [r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools",
-                 r"D:\SteamLibrary\steamapps\common\DayZ Tools"]
-        for c in cands:
+    def find_tools(self) -> bool:
+        """Поиск DayZ Tools в стандартных местах Steam."""
+        for c in (r"C:\Program Files (x86)\Steam\steamapps\common\DayZ Tools", r"D:\SteamLibrary\steamapps\common\DayZ Tools"):
             if Path(c).is_dir():
                 self.dayz_tools = c
                 i = Path(c) / "Bin" / "ImageToPAA" / "ImageToPAA.exe"
+                w = Path(c) / "Bin" / "Workbench" / "workbenchApp.exe"
                 if i.exists():
                     self.image_to_paa = str(i)
-                w = Path(c) / "Bin" / "Workbench" / "workbenchApp.exe"
                 if w.exists():
                     self.workbench = str(w)
                 return True

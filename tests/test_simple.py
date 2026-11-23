@@ -2,7 +2,6 @@
 import numpy as np
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication
 
 from rvmat_studio.backend import State
 from rvmat_studio.core import simple as S
@@ -11,8 +10,6 @@ from rvmat_studio.core.presets import PresetManager, super_template
 from rvmat_studio.core.project import Project
 from rvmat_studio.core.render import RenderOptions, make_resolver, render
 from rvmat_studio.core.settings import Settings
-from rvmat_studio.gui.main_window import MainWindow
-from rvmat_studio.gui.theme import DARK
 
 
 # ------------------------------------------------------------------ математика
@@ -113,24 +110,6 @@ def test_normal_strength_changes_relief_only_in_preview(normal_scene):
     assert m.to_text() == before                                      # в RVMAT ничего не записано
 
 
-def test_normal_strength_in_gl_matches_cpu(normal_scene):
-    from rvmat_studio.core import gl_render as G
-    QApplication.instance() or QApplication([])
-    if not G.gl_available():
-        pytest.skip("OpenGL недоступен")
-    m, res = normal_scene
-    g = G.GLOffscreen()
-    try:
-        for s in (0.0, 1.0, 2.5):
-            o = RenderOptions(width=160, height=160, normal_strength=s, tiling=2)
-            assert _mad(g.render(m, o, res, samples=0), render(m, o, res)) < 6.0, s
-        a = g.render(m, RenderOptions(width=160, height=160, normal_strength=0.0, tiling=2), res, samples=0)
-        b = g.render(m, RenderOptions(width=160, height=160, normal_strength=3.0, tiling=2), res, samples=0)
-        assert _mad(a, b) > 1.0
-    finally:
-        g.close()
-
-
 def test_project_normal_strength_is_per_material_and_persists(tmp_path):
     p = Project("m")
     p.set_normal_strength(2.0)
@@ -148,95 +127,5 @@ def test_project_normal_strength_is_per_material_and_persists(tmp_path):
 
 
 # ------------------------------------------------------------------ интерфейс
-@pytest.fixture(scope="module")
-def app():
-    a = QApplication.instance() or QApplication([])
-    a.setStyle("Fusion"); a.setStyleSheet(DARK)
-    return a
 
 
-@pytest.fixture
-def win(app, tmp_path):
-    w = MainWindow(Settings(), PresetManager(tmp_path / "presets"))
-    w.show()
-    yield w
-    w.proj.dirty = False
-    w.close()
-
-
-def test_quick_panel_is_the_first_thing_and_advanced_is_collapsed(app, win):
-    pn = win.panel
-    assert pn.tabs.tabText(0) == "Материал" and set(pn.quick) == {"rough", "shine", "metal", "glow", "normal"}
-    assert not pn.adv.isChecked()
-    pn.adv.setChecked(True)
-    assert pn.power.isVisibleTo(pn.tabs.widget(0))
-    pn.adv.setChecked(False)
-    assert pn.quick["rough"].spin.suffix() == " %"
-    assert "specularPower" in pn.quick_note["rough"].text()           # показывает, какое поле RVMAT меняется
-
-
-def test_moving_roughness_writes_specular_power_and_updates_advanced(app, win):
-    pn, sh = win.panel, win.proj.spec.shared
-    pn.quick["rough"].spin.setValue(0)
-    assert sh.get("specularPower") == 200.0 and pn.power.value() == 200.0   # расширенное поле синхронно
-    pn.quick["rough"].spin.setValue(100)
-    assert sh.get("specularPower") == 1.0
-    pn.power.spin.setValue(50.0)                                           # правка «подробно» двигает ползунок
-    assert pn.quick["rough"].spin.value() == pytest.approx(S.power_to_roughness(50.0), abs=0.6)
-
-
-def test_metallic_slider_is_one_undo_step_and_moves_shine(app, win):
-    pn = win.panel
-    n_before = len(win.proj._undo)
-    pn.quick["metal"].spin.setValue(100)
-    sh = win.proj.spec.shared
-    assert sh.get("diffuse")[0] == pytest.approx(0.18, abs=1e-5) and sh.get("specular")[0] == pytest.approx(1.0, abs=1e-5)
-    assert pn.quick["shine"].spin.value() == 100                           # ползунок блика подтянулся
-    assert len(win.proj._undo) == n_before + 1                             # три поля — один шаг отмены
-    win.undo()
-    assert sh is not None and win.proj.spec.shared.get("diffuse")[0] == pytest.approx(0.9, abs=1e-5)
-    assert pn.quick["metal"].spin.value() == 0
-
-
-def test_quick_reset_restores_original_values(app, win):
-    pn = win.panel
-    pn.quick["metal"].spin.setValue(80)
-    pn.quick["metal"].btn.click()
-    sh = win.proj.spec.shared
-    assert sh.get("diffuse")[0] == pytest.approx(0.9, abs=1e-5) and sh.get("specular")[0] == pytest.approx(0.8, abs=1e-5)
-    pn.quick["glow"].spin.setValue(60)
-    assert sh.get("emmisive")[0] == pytest.approx(0.6, abs=1e-5)
-    pn.quick["glow"].btn.click()
-    assert win.proj.spec.shared.get("emmisive")[0] == 0
-
-
-def test_quick_sliders_edit_only_the_selected_state(app, win):
-    pn = win.panel
-    pn.set_target(State.DAMAGE.value)
-    pn.quick["rough"].spin.setValue(10)
-    assert win.proj.is_overridden(State.DAMAGE.value, "specularPower")
-    assert win.proj.effective(State.DAMAGE).get("specularPower") == S.roughness_to_power(10)
-    assert win.proj.effective(State.DESTRUCT).get("specularPower") == 15.0
-    assert pn.quick["rough"].label.property("overridden") is True
-    pn.quick["rough"].btn.click()
-    assert not win.proj.is_overridden(State.DAMAGE.value, "specularPower")
-
-
-def test_normal_strength_slider_is_preview_only(app, win):
-    pn = win.panel
-    before = {k: m.to_text() for k, m in win.proj.kit_all().items()}
-    pn.quick["normal"].spin.setValue(250)
-    assert win.proj.slot.normal_strength == pytest.approx(2.5) and win.preview.opts.normal_strength == pytest.approx(2.5)
-    assert {k: m.to_text() for k, m in win.proj.kit_all().items()} == before
-    pn.quick["normal"].btn.click()
-    assert win.proj.slot.normal_strength == 1.0
-
-
-def test_quick_sliders_move_the_live_preview(app, win):
-    win.c_shape.setCurrentText("Сфера")
-    win.preview.opts.pitch = 0; win.preview.opts.yaw = 0
-    win.panel.quick["rough"].spin.setValue(100)
-    a = win.preview.render_sync()
-    win.panel.quick["rough"].spin.setValue(0)
-    b = win.preview.render_sync()
-    assert _mad(a, b) > 0.5

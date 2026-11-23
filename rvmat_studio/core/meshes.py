@@ -17,6 +17,8 @@ class Mesh:
     t: np.ndarray = None   # tangents (N,3)
     face_part: np.ndarray = None      # (M,) индекс части (селекшена) для каждой грани
     part_names: list = None           # имена частей; None/[] — модель без селекшенов
+    center: tuple = (0.0, 0.0, 0.0)   # исходный центр и масштаб (до нормировки) — для записи FBX
+    scale: float = 1.0
 
     @property
     def n_parts(self) -> int:
@@ -43,7 +45,8 @@ class Mesh:
         c = (self.v.max(0) + self.v.min(0)) / 2
         self.v -= c
         r = np.linalg.norm(self.v, axis=1).max()
-        self.v /= (r if r > 0 else 1)
+        self.center, self.scale = tuple(float(x) for x in c), float(r if r > 0 else 1.0)
+        self.v /= self.scale
         if self.n is None or len(self.n) != len(self.v):
             self.n = vertex_normals(self.v, self.f)
         self.n = (self.n / np.maximum(np.linalg.norm(self.n, axis=1, keepdims=True), 1e-8)).astype(np.float32)

@@ -25,6 +25,8 @@ class Slot:
         self.baseline = self.spec.shared.clone()     # для «сброса» общих параметров
         self.base_color = ""                          # физический файл _co для предпросмотра (в RVMAT НЕ пишется)
         self.normal_strength = 1.0                    # усиление нормали — только предпросмотр
+        self.preset_tag = ""                          # id/имя применённого пресета (идёт в имя RVMAT при экспорте)
+        self.label = ""                               # имя селекшена для имён файлов (пусто — по назначенной части)
 
     @property
     def name(self) -> str:
@@ -33,7 +35,7 @@ class Slot:
     def to_dict(self) -> dict:
         return {"name": self.name, "rvmat": self.spec.shared.to_text(), "decorative": self.spec.decorative,
                 "overrides": {s.value: v for s, v in self.spec.overrides.items() if v}, "base_color": self.base_color,
-                "normal_strength": self.normal_strength}
+                "normal_strength": self.normal_strength, "preset_tag": self.preset_tag, "label": self.label}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Slot":
@@ -42,6 +44,7 @@ class Slot:
         sl.spec.overrides = {State(k): v for k, v in d.get("overrides", {}).items()}
         sl.base_color = d.get("base_color", "")
         sl.normal_strength = float(d.get("normal_strength", 1.0))
+        sl.preset_tag, sl.label = d.get("preset_tag", ""), d.get("label", "")
         sl.baseline = sl.spec.shared.clone()
         return sl
 
@@ -61,6 +64,8 @@ class Project:
         self.active = 0                  # редактируемый материал
         self.part_map: dict[str, str] = {}   # часть (селекшен) модели -> имя материала; нет записи = первый материал
         self.model_path = ""             # пользовательская модель для предпросмотра
+        self.mesh_name = ""              # имя меша для экспорта (пусто — по файлу модели/проекту)
+        self.export_opts: dict = {}      # последние настройки окна экспорта
         self.enabled: set[State] = set(ALL_STATES)
         self.project_root = ""           # P:\ или корень проекта: для проверки/пересчёта путей
         self.export_dir = ""
@@ -115,6 +120,7 @@ class Project:
     def to_dict(self) -> dict:
         return {"version": FORMAT_VERSION, "title": self.title, "slots": [s.to_dict() for s in self.slots],
                 "active": self.active, "part_map": self.part_map, "model_path": self.model_path,
+                "mesh_name": self.mesh_name, "export_opts": self.export_opts,
                 "enabled": sorted(s.value for s in self.enabled), "project_root": self.project_root,
                 "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map}
 
@@ -126,6 +132,7 @@ class Project:
             p.active = min(int(d.get("active", 0)), len(p.slots) - 1)
             p.part_map = dict(d.get("part_map", {}))
             p.model_path = d.get("model_path", "")
+            p.mesh_name, p.export_opts = d.get("mesh_name", ""), dict(d.get("export_opts", {}))
         else:                                           # формат v1: один материал
             p = cls(d["name"], Material.from_text(d["rvmat"]))
             p.slots = [Slot.from_dict({"name": d["name"], "rvmat": d["rvmat"], "decorative": d.get("decorative", {}),
@@ -144,6 +151,7 @@ class Project:
         np_ = Project.from_dict(d)
         self.title, self.slots, self.active, self.part_map = np_.title, np_.slots, np_.active, np_.part_map
         self.model_path, self.enabled = np_.model_path, np_.enabled
+        self.mesh_name, self.export_opts = np_.mesh_name, np_.export_opts
         self.project_root, self.export_dir, self.textures = np_.project_root, np_.export_dir, np_.textures
         self.tex_map = np_.tex_map
 
@@ -330,6 +338,15 @@ class Project:
             del d[path]
             self._notify()
 
+    def reset_to_baseline(self, target: str, path: str):
+        """Кнопка ↺: для общего материала — исходное значение, для состояния/ветки — снять переопределение."""
+        if target == TARGET_SHARED:
+            base = flatten_values(self.baseline).get(path)
+            if base is not None:
+                self.set_value(target, path, base, f"Сброс {path}")
+        else:
+            self.reset_value(target, path)
+
     def is_overridden(self, target: str, path: str) -> bool:
         if target == TARGET_DECOR:
             return path in self.spec.decorative
@@ -337,7 +354,7 @@ class Project:
             return False
         return path in self.spec.overrides.get(State(target), {})
 
-    def apply_material(self, m: Material, label="Применён материал/пресет", keep_textures=True):
+    def apply_material(self, m: Material, label="Применён материал/пресет", keep_textures=True, preset_tag=""):
         """Заменить общий материал (например, пресетом), сохранив назначенные текстуры."""
         self._change(label)
         if keep_textures:
@@ -348,6 +365,7 @@ class Project:
                     s_new.texture = s_old.texture
         self.spec.shared = m.clone()
         self.baseline = m.clone()
+        self.slot.preset_tag = preset_tag
         self._notify()
 
     def effective(self, state: State) -> Material:

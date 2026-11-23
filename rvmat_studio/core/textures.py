@@ -1,44 +1,19 @@
 """Менеджер текстур: загрузка, каналы, автосопоставление, кэш миниатюр, конвертация PAA."""
 from __future__ import annotations
 
-import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from .texnames import convert_with_tool as convert_to_paa  # noqa: F401
 
 import numpy as np
 from PIL import Image
 
 from .paa import PaaError, read_paa
 
-SOURCE_EXT = {".png", ".tga", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-GAME_EXT = {".paa", ".pac"}
-ALL_EXT = SOURCE_EXT | GAME_EXT
-
-# суффикс -> номер стадии RVMAT (Super)
-SUFFIX_STAGE = {"nohq": 1, "no": 1, "nopx": 1, "as": 4, "smdi": 5}
-BASE_SUFFIXES = {"co", "ca"}      # базовый цвет — задаётся на грани модели (P3D), не стадия RVMAT
-BASE_STAGE = 0                    # псевдо-стадия «Base Color» в авто-сопоставлении
-STAGE_ROLE = {1: "Normal (nohq)", 2: "Detail (dt)", 3: "Material Condition (mc)",
-              4: "AS — Ambient Shadow (фоновое затенение)", 5: "SMDI", 6: "Fresnel", 7: "Environment"}
-_SUFFIX_RE = re.compile(r"^(?P<base>.+?)_(?P<suf>nohq|nopx|no|as|smdi|co|ca|dt|mc|sm|mca)$", re.I)
-
-
-def split_suffix(stem: str) -> tuple[str, Optional[str]]:
-    m = _SUFFIX_RE.match(stem)
-    return (m["base"], m["suf"].lower()) if m else (stem, None)
-
-
-def guess_stage(path) -> Optional[int]:
-    suf = split_suffix(Path(path).stem)[1]
-    if suf == "dt":
-        return 2
-    if suf == "mc":
-        return 3
-    if suf in BASE_SUFFIXES:
-        return BASE_STAGE
-    return SUFFIX_STAGE.get(suf) if suf else None
+from .texnames import (ALL_EXT, BASE_STAGE, BASE_SUFFIXES, GAME_EXT, SOURCE_EXT, STAGE_ROLE, SUFFIX_STAGE, auto_match, guess_stage,  # noqa: F401
+                       scan_folder, split_suffix, to_game_path, unique_game_path)
 
 
 @dataclass
@@ -148,58 +123,3 @@ class ThumbCache:
         return self._c[key]
 
 
-def scan_folder(folder, recursive=True) -> list[Path]:
-    f = Path(folder)
-    it = f.rglob("*") if recursive else f.glob("*")
-    return sorted(p for p in it if p.is_file() and p.suffix.lower() in ALL_EXT)
-
-
-def auto_match(files: list[Path]) -> dict[str, dict[int, Path]]:
-    """Группировка по общему имени: {base: {stage: path}}.
-    stage 1/2/3/4/5 — стадии RVMAT (_nohq/_dt/_mc/_as/_smdi); stage 0 — Base Color (_co/_ca),
-    который в RVMAT не записывается (используется только в предпросмотре)."""
-    groups: dict[str, dict[int, Path]] = {}
-    for f in files:
-        base, suf = split_suffix(f.stem)
-        st = guess_stage(f)
-        if suf is None or st is None:
-            continue
-        g = groups.setdefault(base.lower(), {})
-        if st == BASE_STAGE and suf == "ca" and st in g:      # _co предпочтительнее _ca
-            continue
-        g[st] = f
-    return groups
-
-
-def to_game_path(physical: Path, root: Path, ext: str = ".paa") -> str:
-    """Физический путь -> игровой (относительно P:/корня проекта), с .paa."""
-    rel = Path(physical).resolve().relative_to(Path(root).resolve())
-    return str(rel.with_suffix(ext)).replace("/", "\\")
-
-
-def unique_game_path(phys: Path, tex_map: dict) -> str:
-    """Игровой путь для файла ВНЕ корня проекта: короткое имя, а при совпадении с другим файлом —
-    с добавлением имён родительских папок (plate\\x_as.paa), чтобы два материала не делили одно имя
-    и не подменяли текстуры друг друга."""
-    phys = Path(phys)
-    name = phys.with_suffix(".paa").name
-    parents = [p for p in reversed(phys.parent.parts) if p not in ("/", "\\") and not p.endswith(":\\") and not p.endswith(":")]
-    cand, depth = name, 0
-    while cand.lower() in tex_map and Path(tex_map[cand.lower()]) != phys:
-        depth += 1
-        if depth <= len(parents):
-            cand = "\\".join(reversed(parents[:depth])) + "\\" + name
-        else:                                                   # экзотика: одинаковые пути — нумерация
-            cand = f"{depth - len(parents)}_{name}"
-    return cand
-
-
-def convert_to_paa(src: Path, image_to_paa: Path, out: Optional[Path] = None) -> Path:
-    """Вызов ImageToPAA.exe из DayZ Tools. Требует Windows + установленные DayZ Tools."""
-    out = out or src.with_suffix(".paa")
-    if not Path(image_to_paa).exists():
-        raise FileNotFoundError(f"ImageToPAA не найден: {image_to_paa}")
-    r = subprocess.run([str(image_to_paa), str(src), str(out)], capture_output=True, text=True, timeout=300)
-    if r.returncode != 0 or not out.exists():
-        raise RuntimeError(f"ImageToPAA завершился с кодом {r.returncode}: {r.stderr or r.stdout}")
-    return out

@@ -1,6 +1,0 @@
-
-[dev]
-pytest
-
-[gui]
-PySide6>=6.6

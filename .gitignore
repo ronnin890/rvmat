@@ -2,7 +2,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.bak
+.venv/
 build/
 dist/
 *.spec
-.venv/
+*.egg-info/

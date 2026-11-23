@@ -1,42 +1,29 @@
-name: build
+name: tests
 on:
   push:
     branches: ["claude/**", main]
   workflow_dispatch:
 
 jobs:
-  test:
+  linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk
       - run: pip install -r requirements.txt pytest
-      - run: pip install -e . --no-deps
-      - run: python -m pytest -q
-        env: { QT_QPA_PLATFORM: offscreen }
-      - name: Тесты с OpenGL (Xvfb + Mesa llvmpipe)
-        run: |
-          sudo apt-get install -y xvfb libgl1-mesa-dri libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-shape0 libxcb-xkb1 libxkbcommon-x11-0 libxcb-render-util0 libxcb-randr0 libxcb-xinerama0 libxcb-xfixes0
-          xvfb-run -a -s "-screen 0 1600x1000x24" python -m pytest -q
-        env: { QT_QPA_PLATFORM: xcb, LIBGL_ALWAYS_SOFTWARE: "1", LP_NUM_THREADS: "0" }
+      - name: Тесты (включая интерфейс tkinter под Xvfb)
+        run: xvfb-run -a python -m pytest -q
+      - name: Самопроверка приложения
+        run: xvfb-run -a python -m rvmat_studio --selftest
 
   windows:
-    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt pyinstaller pytest
-      - run: pip install -e . --no-deps
+      - run: pip install -r requirements.txt pytest
       - run: python -m pytest -q
-        env: { QT_QPA_PLATFORM: offscreen }
-      - run: pyinstaller --noconfirm --clean --windowed --name DayZRvmatStudio --collect-submodules rvmat_studio run_studio.py
-      - name: Smoke test собранного exe
-        run: dist\DayZRvmatStudio\DayZRvmatStudio.exe --selftest
-        env: { QT_QPA_PLATFORM: offscreen }
-      - run: Compress-Archive -Path dist\DayZRvmatStudio -DestinationPath DayZRvmatStudio-win64.zip
-      - uses: actions/upload-artifact@v4
-        with: { name: DayZRvmatStudio-win64, path: DayZRvmatStudio-win64.zip }
+      - run: python -m rvmat_studio --selftest

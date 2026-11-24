@@ -21,10 +21,12 @@ jobs:
       - run: pip install --require-hashes -r requirements.lock
       - run: pip install pyinstaller pytest
       - run: python -m pytest -q
+        env: { QT_QPA_PLATFORM: offscreen }
       - name: Сборка (PyInstaller, папка без консоли)
         run: pyinstaller --noconfirm packaging/rvmat_studio.spec
       - name: Самопроверка собранной программы
         run: dist\DayZRvmatStudio\DayZRvmatStudio.exe --selftest
+        env: { QT_QPA_PLATFORM: offscreen }
       - name: Портативный zip и установщик (Inno Setup)
         shell: pwsh
         run: |

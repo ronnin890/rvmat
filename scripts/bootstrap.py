@@ -1,6 +1,6 @@
 """Подготовка окружения и запуск программы. Вызывается из start.bat интерпретатором из .venv.
 
-Показывает, что происходит (установка видна), проверяет tkinter и ловит падение при старте:
+Показывает, что происходит (установка видна), ловит падение при старте:
 если окно не открылось, ошибка печатается в консоли и сохраняется в файл."""
 import importlib.util
 import subprocess
@@ -27,9 +27,9 @@ def pip(*args: str) -> bool:
 
 
 def ensure_deps() -> bool:
-    if has("numpy") and has("PIL"):
+    if has("PySide6") and has("numpy") and has("PIL"):
         return True
-    say("Первый запуск: устанавливаю numpy и Pillow (около 40 МБ; обычно 1-2 минуты, зависит от интернета).")
+    say("Первый запуск: устанавливаю PySide6 (Qt), numpy и Pillow (около 100 МБ; обычно 1-3 минуты, зависит от интернета).")
     say("Идёт загрузка - окно программы появится после установки. Не закрывайте это окно.")
     say()
     if not pip("--require-hashes", "-r", "requirements.lock"):
@@ -39,7 +39,7 @@ def ensure_deps() -> bool:
             return False
         if not pip("-r", "requirements-gl.txt"):
             say("moderngl не установился: предпросмотр будет работать на процессоре (медленнее на тяжёлых моделях).")
-    return has("numpy") and has("PIL")
+    return has("PySide6") and has("numpy") and has("PIL")
 
 
 def launch() -> int:
@@ -67,9 +67,6 @@ def main() -> int:
     say(f"Python {sys.version.split()[0]}, папка программы: {ROOT}")
     if not ensure_deps():
         say("Не удалось установить зависимости. Проверьте интернет/прокси и запустите start.bat ещё раз.")
-        return 1
-    if not has("tkinter"):
-        say("В этой установке Python нет tkinter. Переустановите Python с python.org (компонент tcl/tk and IDLE).")
         return 1
     return launch()
 

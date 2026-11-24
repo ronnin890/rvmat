@@ -336,7 +336,7 @@ def test_no_shell_true_and_timeouts():
         for m in re.finditer(r"subprocess\.run\((?:[^()]|\([^()]*\))*\)", text, re.S):
             if "timeout" not in m.group(0):
                 problems.append(f"{f.name}: run без timeout")
-        for pat in (r"os\.system", r"os\.popen", r"\bexec\(", r"\beval\(", r"pickle\.load", r"yaml\.load\("):
+        for pat in (r"os\.system", r"os\.popen", r"(?<![.\w])exec\(", r"(?<![.\w])eval\(", r"pickle\.load", r"yaml\.load\("):
             if re.search(pat, text):
                 problems.append(f"{f.name}: {pat}")
         if "subprocess.Popen" in text:

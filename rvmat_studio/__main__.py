@@ -38,11 +38,9 @@ def _crash() -> int:
     except Exception:
         pass
     try:
-        import tkinter
-        from tkinter import messagebox
-        r = tkinter.Tk(); r.withdraw()
-        messagebox.showerror("DayZ RVMAT Studio", "Не удалось запустить программу:\n\n" + text.strip().splitlines()[-1] + where)
-        r.destroy()
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        app = QApplication.instance() or QApplication([])
+        QMessageBox.critical(None, "DayZ RVMAT Studio", "Не удалось запустить программу:\n\n" + text.strip().splitlines()[-1] + where)
     except Exception:
         pass
     return 1
@@ -62,10 +60,10 @@ def _main():
     if a and a[0] in ("kit", "validate"):
         return cli(a)
     if a and a[0] == "--selftest":
-        from .ui.selftest import selftest
+        from .gui.app import selftest
         return selftest()
-    from .ui.app import main as gui
-    return gui(a)
+    from .gui.app import main as gui
+    return gui(["rvmat_studio"] + a)
 
 
 if __name__ == "__main__":

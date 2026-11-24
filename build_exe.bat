@@ -15,7 +15,6 @@ if not exist ".buildvenv\Scripts\python.exe" (
 )
 ".buildvenv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements.txt pyinstaller || goto :err
 ".buildvenv\Scripts\python.exe" -m pip install --disable-pip-version-check -q -r requirements-gl.txt || echo moderngl не установлен: сборка будет без GPU-рендера.
-".buildvenv\Scripts\python.exe" -c "import tkinter" 2>nul || (echo В этом Python нет tkinter. Переустановите Python с python.org. & pause & exit /b 1)
 
 rmdir /s /q build dist 2>nul
 ".buildvenv\Scripts\python.exe" -m PyInstaller --noconfirm packaging\rvmat_studio.spec || goto :err

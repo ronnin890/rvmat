@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import sys
 from dataclasses import asdict, dataclass, field
@@ -32,7 +33,9 @@ class Settings:
     autosave_seconds: int = 60
     recent: list = field(default_factory=list)
     last_dir: str = ""
-    geometry: str = ""
+    geometry: str = ""            # Qt: base64 QMainWindow.saveGeometry
+    window_state: str = ""        # Qt: base64 QMainWindow.saveState
+    reflect_gain: float = 1.0     # сила отражений окружения в превью (калибровка)
     renderer: str = "auto"        # auto | gl | cpu
     trusted_exes: list = field(default_factory=list)   # exe, запуск которых пользователь подтвердил
     texture_dirs: list = field(default_factory=list)   # папки с текстурами, добавленные пользователем явно
@@ -68,6 +71,8 @@ class Settings:
                     v = safeio.as_str(v, k)
                 elif isinstance(default, int) and not isinstance(default, bool):
                     v = safeio.as_int(v, k, default, 5, 86400)
+                elif isinstance(default, float):
+                    v = safeio.as_float(v, k, default, 0.0, 8.0)
                 elif isinstance(default, list):
                     v = safeio.str_list(v, k, 200)
                 else:
@@ -76,6 +81,10 @@ class Settings:
                 st._warnings.append(str(e))
                 continue
             setattr(st, k, v)
+        for k in ("geometry", "window_state"):           # base64 (QByteArray); мусор и чрезмерная длина отбрасываются
+            if not re.fullmatch(r"[A-Za-z0-9+/=]{0,16384}", getattr(st, k)):
+                st._warnings.append(f"{k}: повреждённое значение сброшено")
+                setattr(st, k, "")
         if st.renderer not in ("auto", "gl", "cpu"):
             st._warnings.append(f"renderer={st.renderer!r} недопустим — использовано auto")
             st.renderer = "auto"

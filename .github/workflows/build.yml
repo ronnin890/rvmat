@@ -29,17 +29,18 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-gl.txt
-      - run: sudo apt-get update && sudo apt-get install -y xvfb python3-tk libegl1 libgl1-mesa-dri
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libgl1-mesa-dri libxkbcommon0 libfontconfig1 libdbus-1-3 libxcb-cursor0
       - run: pip install -r requirements.txt -r requirements-gl.txt pytest pytest-cov hypothesis ruff mypy
       - name: Линтер и типы
         run: |
           ruff check rvmat_studio tests
           mypy rvmat_studio/core/limits.py rvmat_studio/core/safeio.py rvmat_studio/core/logs.py
-      - name: Тесты (включая интерфейс tkinter под Xvfb, если есть tkinter)
-        run: xvfb-run -a python -m pytest -q -rs --cov=rvmat_studio/core --cov=rvmat_studio/backend --cov-report=term --cov-fail-under=92
-        env: { LIBGL_ALWAYS_SOFTWARE: "1", RVMAT_REQUIRE_ALL: "1" }
+      - name: Тесты (интерфейс Qt в режиме offscreen)
+        run: python -m pytest -q -rs --cov=rvmat_studio/core --cov=rvmat_studio/backend --cov-report=term --cov-fail-under=92
+        env: { QT_QPA_PLATFORM: offscreen, LIBGL_ALWAYS_SOFTWARE: "1", LP_NUM_THREADS: "0", RVMAT_REQUIRE_ALL: "1" }
       - name: Самопроверка приложения
-        run: xvfb-run -a python -m rvmat_studio --selftest
+        run: python -m rvmat_studio --selftest
+        env: { QT_QPA_PLATFORM: offscreen, LIBGL_ALWAYS_SOFTWARE: "1" }
 
   windows:
     runs-on: windows-latest
@@ -55,4 +56,6 @@ jobs:
             requirements-gl.txt
       - run: pip install -r requirements.txt -r requirements-gl.txt pytest hypothesis
       - run: python -m pytest -q -rs
+        env: { QT_QPA_PLATFORM: offscreen }
       - run: python -m rvmat_studio --selftest
+        env: { QT_QPA_PLATFORM: offscreen }

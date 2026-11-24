@@ -1,18 +1,18 @@
 # DayZ RVMAT Studio
 
-Редактор и генератор материалов `.rvmat` для DayZ. Одно настольное приложение (tkinter), без Qt, без браузера и сервера.
+Редактор и генератор материалов `.rvmat` для DayZ. Одно настольное приложение на Qt (PySide6), без браузера и сервера.
 ТЗ: [docs/TZ.md](docs/TZ.md).
 
 ## Установка и запуск (Windows)
 
-1. Нужен Python 3.10+ с python.org (в нём уже есть tkinter; при установке отметьте «Add python.exe to PATH»).
-2. Запустите **`start.bat`**. При первом запуске он создаёт папку `.venv` и ставит `numpy`, `Pillow` (≈ 40 МБ) и необязательный `moderngl` для GPU-рендера — обычно 1–2 минуты, **ход установки виден в консоли**; окно программы появится после неё. Дальше программа стартует мгновенно. Если окно не открылось, консоль покажет причину и сохранит её в `%TEMP%\rvmat_studio_start.log`.
+1. Нужен Python 3.10+ с python.org (при установке отметьте «Add python.exe to PATH»).
+2. Запустите **`start.bat`**. При первом запуске он создаёт папку `.venv` и ставит `PySide6` (Qt), `numpy`, `Pillow` (≈ 100 МБ) и необязательный `moderngl` для GPU-рендера — обычно 1–3 минуты, **ход установки виден в консоли**; окно программы появится после неё. Дальше программа стартует мгновенно. Если окно не открылось, консоль покажет причину и сохранит её в `%TEMP%\rvmat_studio_start.log`.
 3. Без установки Python: готовый установщик/zip из раздела «Версия без установки Python» ниже.
 
 Из консоли: `pip install -r requirements.txt -r requirements-gl.txt && python -m rvmat_studio`.
 CLI без окна: `python -m rvmat_studio kit base.rvmat myhelmet out/` · `python -m rvmat_studio validate file.rvmat`.
 
-> Вес окружения: было ≈ 670 МБ (PySide6), стало ≈ 40 МБ (numpy + Pillow).
+> Ставится облегчённый `PySide6-Essentials` (только QtCore/QtGui/QtWidgets), а не полный PySide6 с аддонами.
 
 ## Экспорт — одна кнопка «Экспорт…»
 
@@ -78,14 +78,13 @@ CLI без окна: `python -m rvmat_studio kit base.rvmat myhelmet out/` · `p
 - Экспорт FBX из OBJ и копирование FBX проверены только повторным чтением собственным загрузчиком, не Blender/Object Builder. Селекшены P3D не читаются и не пишутся: «часть» — это объект/группа FBX/OBJ.
 - Stage3 для обычного (base) материала не подтверждён образцами (взят как у decorative; сообщение `I300`).
 - Интеграция с Workbench (`-project=<dayz.gproj>`) не проверялась на реальных DayZ Tools.
-- Ограничения tkinter: интерфейс аккуратный, но проще, чем на Qt.
 
 ## Тесты
 
 ```
 run_tests.bat                      # Windows
-python -m pytest -q                # любая ОС
+python -m pytest -q                # любая ОС (интерфейс Qt тестируется в режиме offscreen, дисплей не нужен)
 ```
 
-Часть тестов пропускается только из-за окружения: интерфейс (`test_ui.py`) — без tkinter/дисплея, GPU-рендер (`test_glrender.py`) — без moderngl/OpenGL 3.3, фаззинг (`test_fuzz.py`) — без `hypothesis`, symlink-тесты — на Windows. В CI задано `RVMAT_REQUIRE_ALL=1`: любой другой пропуск считается ошибкой. Покрытие `core/` и `backend/` в CI — не ниже 92 %.
+Часть тестов пропускается только из-за окружения: интерфейс (`test_gui.py`) — без PySide6, GPU-рендер (`test_glrender.py`) — без moderngl/OpenGL 3.3, фаззинг (`test_fuzz.py`) — без `hypothesis`, symlink-тесты — на Windows. В CI задано `RVMAT_REQUIRE_ALL=1`: любой другой пропуск считается ошибкой. Покрытие `core/` и `backend/` в CI — не ниже 92 %.
 Закрепление GitHub Actions по SHA: `python scripts/pin_actions.py` (нужен `gh`).

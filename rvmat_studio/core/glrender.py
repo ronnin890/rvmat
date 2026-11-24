@@ -1,4 +1,4 @@
-"""GPU-рендер предпросмотра (OpenGL 3.3 через moderngl, офлайн-контекст; кадр читается в numpy и показывается в окне tkinter).
+"""GPU-рендер предпросмотра (OpenGL 3.3 через moderngl, офлайн-контекст; кадр читается в numpy и показывается в окне программы).
 
 Модель света — та же, что у процессорного рендера (core/render.py): воссоздание шейдера Super, не движок Enfusion.
 Текстуры грузятся в полном разрешении (с мипмапами и анизотропией), тангенты считаются в шейдере по производным UV,
@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import math
 import queue
+import atexit
 import threading
+import weakref
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -133,7 +135,7 @@ class GLRenderer:
             raise GLUnavailable("moderngl не установлен")
         self.ctx, err = None, ""
         import sys
-        backends = (["egl", None] if sys.platform.startswith("linux") else [None])      # EGL не трогает X-сервер окна tkinter
+        backends = (["egl", None] if sys.platform.startswith("linux") else [None])      # EGL не трогает дисплей окна программы
         for be in backends:
             try:
                 self.ctx = (moderngl.create_standalone_context(require=330, backend=be) if be else moderngl.create_standalone_context(require=330))
@@ -378,6 +380,7 @@ class GLThread(threading.Thread):
         self.ready = threading.Event()
         self.renderer: Optional[GLRenderer] = None
         self.error = ""
+        _live.add(self)
         self.start()
 
     def run(self):
@@ -417,5 +420,22 @@ class GLThread(threading.Thread):
             raise box["error"]
         return box.get("result")
 
-    def stop(self):
+    def stop(self, timeout: float = 10.0):
+        """Остановить поток и дождаться освобождения GL-ресурсов (иначе при выходе процесса возможен сбой в драйвере)."""
         self.q.put(None)
+        if threading.current_thread() is not self and self.is_alive():
+            self.join(timeout)
+
+
+_live: "weakref.WeakSet[GLThread]" = weakref.WeakSet()
+
+
+def _stop_all():
+    for t in list(_live):
+        try:
+            t.stop(5.0)
+        except Exception:
+            pass
+
+
+atexit.register(_stop_all)

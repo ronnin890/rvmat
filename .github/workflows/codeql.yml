@@ -20,7 +20,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4              # pin: scripts/pin_actions.py
+      - uses: actions/checkout@v7              # pin: scripts/pin_actions.py
         with: { persist-credentials: false }
       - uses: github/codeql-action/init@v3     # pin: scripts/pin_actions.py
         with: { languages: python }

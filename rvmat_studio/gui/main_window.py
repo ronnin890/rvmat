@@ -20,7 +20,7 @@ from ..core.presets import CATEGORIES, PresetManager
 from ..core.project import TARGET_DECOR, TARGET_SHARED, Project
 from ..core.render import DIFFERENCES, LIGHTING, make_resolver
 from ..core.settings import Settings
-from ..core.textures import ThumbCache, convert_to_paa, load_rgba, to_game_path, unique_game_path
+from ..core.textures import ThumbCache, convert_to_paa, load_rgba, to_drive_path, to_game_path, unique_game_path
 from .dialogs import BatchDialog, CandidateDialog, ExportDialog, SettingsDialog, TextureViewer
 from .library import PartsTab, PresetsTab, StatesTab, TexturesTab
 from .preview import PreviewWidget
@@ -485,7 +485,14 @@ class MainWindow(QMainWindow):
             return
         root = Path(self.proj.project_root) if self.proj.project_root else None
         game = None
-        if root:
+        if self.settings.full_drive_paths:                # полный путь от диска: P:\\MyMod\\x.paa
+            game = to_drive_path(phys, self.settings.p_drive)
+            if game is None and root:                      # корень проекта вне диска P: — путь от корня, с буквой диска P:
+                try:
+                    game = f"{self.settings.p_drive[:2] if self.settings.p_drive[1:2] == ':' else 'P:'}\\" + to_game_path(phys, root)
+                except ValueError:
+                    game = None
+        elif root:
             try:
                 game = to_game_path(phys, root)
             except ValueError:

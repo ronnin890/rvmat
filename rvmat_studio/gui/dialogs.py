@@ -118,6 +118,9 @@ class SettingsDialog(QDialog):
             self.renderer.addItem(t, v)
         self.renderer.setCurrentIndex(max(0, self.renderer.findData(s.renderer)))
         f.addRow("Рендер предпросмотра (нужен перезапуск)", self.renderer)
+        self.full_paths = QCheckBox("Писать в RVMAT полный путь с диском (P:\\MyMod\\…)")
+        self.full_paths.setChecked(s.full_drive_paths)
+        f.addRow(self.full_paths)
         self.auto = QSpinBox(); self.auto.setRange(10, 3600); self.auto.setValue(s.autosave_seconds); self.auto.setSuffix(" с")
         f.addRow("Автосохранение", self.auto)
         find = QPushButton("Найти DayZ Tools автоматически"); find.clicked.connect(self._find)
@@ -145,6 +148,7 @@ class SettingsDialog(QDialog):
         for k, ed in self.e.items():
             setattr(self.s, k, ed.text().strip())
         self.s.autosave_seconds = self.auto.value()
+        self.s.full_drive_paths = self.full_paths.isChecked()
         self.s.renderer = self.renderer.currentData()
         super().accept()
 
@@ -183,6 +187,10 @@ class ExportDialog(QDialog):
         left.addWidget(self.prefix)
         hint = QLabel("путь корня относительно диска P:, напр. MyMod"); hint.setStyleSheet("color:#8b949e")
         left.addWidget(hint)
+        self.drive = QCheckBox("Полный путь с диском в RVMAT (P:\\MyMod\\…)")
+        self.drive.setChecked(bool(o.get("drive_paths", st.full_drive_paths)))
+        self.drive.setToolTip("Пути текстур в RVMAT: P:\\<префикс>\\<меш>\\data\\файл.paa.\nСтандартный формат DayZ — без диска; отключите, если игра/Binarize не находит файлы.")
+        left.addWidget(self.drive)
 
         g = QGroupBox("Что экспортировать"); gl = QVBoxLayout(g)
         self.tex = QCheckBox("Текстуры (PNG/TGA → PAA)"); self.tex.setChecked(o.get("textures", True))
@@ -228,7 +236,7 @@ class ExportDialog(QDialog):
         self._timer = QTimer(self, singleShot=True, interval=250, timeout=self.update_plan)
         self.root.textChanged.connect(self._on_edit); self.mesh.textChanged.connect(self._on_edit)
         self.prefix.textEdited.connect(self._on_prefix)
-        for w_ in (self.tex, self.fbx, *self.states.values()):
+        for w_ in (self.drive, self.tex, self.fbx, *self.states.values()):
             w_.toggled.connect(lambda _=False: self._timer.start())
         self.conv.currentIndexChanged.connect(lambda _=0: self._timer.start())
         self._progress.connect(self._on_progress)
@@ -241,7 +249,7 @@ class ExportDialog(QDialog):
     def opts(self) -> dict:
         st = self.win.settings
         return {"out_root": self.root.text().strip(), "mesh_name": self.mesh.text().strip(), "prefix": self.prefix.text(),
-                "textures": self.tex.isChecked(), "fbx": self.fbx.isChecked(), "converter": self.conv.currentData(),
+                "textures": self.tex.isChecked(), "fbx": self.fbx.isChecked(), "drive_paths": self.drive.isChecked(), "converter": self.conv.currentData(),
                 "states": [k for k, c in self.states.items() if c.isChecked()], "p_drive": st.p_drive, "image_to_paa": st.image_to_paa}
 
     def _auto_prefix(self):

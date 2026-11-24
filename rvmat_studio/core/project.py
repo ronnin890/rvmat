@@ -166,7 +166,7 @@ class Project:
                 "enabled": sorted(s.value for s in self.enabled), "project_root": self.project_root,
                 "export_dir": self.export_dir, "textures": self.textures, "tex_map": self.tex_map}
 
-    EXPORT_OPT_KEYS = {"out_root": str, "mesh_name": str, "prefix": str, "textures": bool, "fbx": bool, "converter": str}
+    EXPORT_OPT_KEYS = {"out_root": str, "mesh_name": str, "prefix": str, "textures": bool, "fbx": bool, "drive_paths": bool, "converter": str}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Project":

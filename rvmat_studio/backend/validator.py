@@ -120,7 +120,11 @@ def validate(m: Material, project_root: Optional[Path] = None,
 
 def _check_path(tex: str, base: str, root: Optional[Path], add):
     loc = f"{base}.texture"
-    if re.match(r"^[A-Za-z]:[\\/]", tex) or tex.startswith("\\\\"):
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", tex)
+    if m and m.group(1).upper() == "P":                      # полный путь с диском P: — допустим (Workbench), но не стандартен
+        add(Severity.INFO, "I230", "Путь с диском P:\\ (полный путь). Стандартный формат RVMAT — без диска; если игра/Binarize не найдёт файл, отключите «Путь с диском» в экспорте", loc)
+        tex = m.group(2)
+    elif m or tex.startswith("\\\\"):
         add(Severity.ERROR, "E230", "Абсолютный путь Windows; нужен игровой путь (dz\\...)", loc)
         return
     if "/" in tex:

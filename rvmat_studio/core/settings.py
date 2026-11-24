@@ -37,6 +37,7 @@ class Settings:
     window_state: str = ""        # Qt: base64 QMainWindow.saveState
     reflect_gain: float = 1.0     # сила отражений окружения в превью (калибровка)
     renderer: str = "auto"        # auto | gl | cpu
+    full_drive_paths: bool = True  # писать в RVMAT полный путь с диском (P:\\MyMod\\...)
     trusted_exes: list = field(default_factory=list)   # exe, запуск которых пользователь подтвердил
     texture_dirs: list = field(default_factory=list)   # папки с текстурами, добавленные пользователем явно
     version: int = 1
@@ -71,6 +72,8 @@ class Settings:
                     v = safeio.as_str(v, k)
                 elif isinstance(default, int) and not isinstance(default, bool):
                     v = safeio.as_int(v, k, default, 5, 86400)
+                elif isinstance(default, bool):
+                    v = safeio.as_bool(v, k, default)
                 elif isinstance(default, float):
                     v = safeio.as_float(v, k, default, 0.0, 8.0)
                 elif isinstance(default, list):

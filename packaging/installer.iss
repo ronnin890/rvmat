@@ -1,6 +1,6 @@
 ; Установщик (Inno Setup 6). Собирается из dist\DayZRvmatStudio после PyInstaller. Права администратора не нужны.
 #define AppName "DayZ RVMAT Studio"
-#define AppVersion "0.4.1"
+#define AppVersion "0.4.2"
 [Setup]
 AppId={{6B0E4C5A-3D1F-4F7B-9A52-0C7A1D5E8B21}
 AppName={#AppName}

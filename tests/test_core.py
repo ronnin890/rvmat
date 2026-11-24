@@ -398,3 +398,13 @@ def test_dxt1_and_png_are_never_swizzled(tmp_path):
     Image.fromarray(rgba).save(tmp_path / "n_nohq.png")
     from rvmat_studio.core.textures import load_rgba
     assert (load_rgba(tmp_path / "n_nohq.png")[0] == rgba).all()
+
+
+def test_builtin_presets_use_game_calibrated_specular_power():
+    """Глянцевые материалы — в диапазоне 100–200 (в игре заметный глянец начинается там); матовые заметно ниже."""
+    from rvmat_studio.core.presets import BUILTIN
+    pw = {p.id: p.material().get("specularPower") for p in BUILTIN}
+    assert pw["metal_polished"] == 200 and pw["glass"] == 200 and pw["plastic_glossy"] >= 150 and pw["metal_worn"] >= 100
+    assert pw["plastic_matte"] > 8                                 # раньше было 8
+    assert max(pw["fabric"], pw["rubber"], pw["concrete"], pw["wood"], pw["stone"]) < pw["plastic_matte"]
+    assert all(1 <= v <= 200 for v in pw.values())

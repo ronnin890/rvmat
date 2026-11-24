@@ -20,7 +20,7 @@ limits.apply_pillow_limits()
 from .paa import PaaError, read_paa
 
 from .texnames import (ALL_EXT, BASE_STAGE, BASE_SUFFIXES, GAME_EXT, SOURCE_EXT, STAGE_ROLE, SUFFIX_STAGE, auto_match, guess_stage,  # noqa: F401
-                       scan_folder, split_suffix, to_game_path, unique_game_path)
+                       scan_folder, split_suffix, to_drive_path, to_game_path, unique_game_path)
 
 
 @dataclass

@@ -106,7 +106,7 @@ def slot_names(proj: Project, mesh: str) -> list[tuple[str, str]]:
 
 
 def plan_export(proj: Project, opts: dict) -> ExportPlan:
-    """opts: out_root, mesh_name, textures(bool), fbx(bool), states([...]), prefix, converter('builtin'|'tool'), image_to_paa."""
+    """opts: out_root, mesh_name, textures(bool), fbx(bool), states([...]), prefix, drive_paths(bool: писать P:\\... в RVMAT), converter('builtin'|'tool'), image_to_paa."""
     out_root = opts.get("out_root") or proj.project_root
     if not out_root:
         raise ValueError("Не указана папка проекта")
@@ -116,6 +116,9 @@ def plan_export(proj: Project, opts: dict) -> ExportPlan:
     prefix = opts["prefix"] if opts.get("prefix") is not None else default_prefix(out_root, opts.get("p_drive") or "P:\\")
     prefix = prefix.strip("\\/ ").replace("/", "\\")
     base_game = (prefix + "\\" if prefix else "") + mesh + "\\data\\"
+    if opts.get("drive_paths"):                                  # полный путь от диска: P:\\MyMod\\mesh\\data\\x.paa
+        pd = str(opts.get("p_drive") or "P:\\")
+        base_game = (pd[:2] if len(pd) >= 2 and pd[1] == ":" else "P:") + "\\" + base_game
     states = [State(s) for s in opts.get("states", DEFAULT_STATES) if s in {x.value for x in State}]
     plan = ExportPlan(str(out_dir), str(data), mesh)
     names = slot_names(proj, mesh)

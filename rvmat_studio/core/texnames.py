@@ -76,6 +76,16 @@ def to_game_path(physical, root, ext: str = ".paa") -> str:
     return str(rel.with_suffix(ext)).replace("/", "\\")
 
 
+def to_drive_path(physical, p_drive, ext: str = ".paa") -> Optional[str]:
+    """Полный путь от диска P: (`P:\\MyMod\\x.paa`) для файла, лежащего под папкой диска P:; иначе None."""
+    try:
+        rel = Path(physical).resolve().relative_to(Path(p_drive).resolve())
+    except (ValueError, OSError, RuntimeError):
+        return None
+    drive = (str(p_drive)[:2] if len(str(p_drive)) >= 2 and str(p_drive)[1] == ":" else "P:")
+    return f"{drive}\\" + str(rel.with_suffix(ext)).replace("/", "\\")
+
+
 def unique_game_path(phys, tex_map: dict) -> str:
     """Игровой путь для файла вне корня проекта: короткое имя, при совпадении — с именами родительских папок."""
     phys = Path(phys)
@@ -119,6 +129,15 @@ def find_texture(tex: str, project_root: str = "", mapping: Optional[dict] = Non
     mp = {k.lower(): v for k, v in (mapping or {}).items()}.get(key)
     if mp and Path(mp).is_file():
         return Path(mp)
+    drive_m = re.match(r"^[A-Za-z]:\\(.*)$", norm)
+    if drive_m and not (is_unc_or_device(norm) or has_parent_ref(norm)):
+        # путь с диском (P:\\MyMod\\x.paa): ищем остаток под корнем проекта и корнями диска P: (extra_dirs / allowed)
+        rest = [x for x in drive_m.group(1).split("\\") if x]
+        for root in ([project_root] if project_root else []) + list(extra_dirs) + [a for a in (allowed or []) if a]:
+            if root and Path(root).is_dir():
+                hit = _walk_ci(Path(root), rest)
+                if hit is not None and hit.is_file() and is_within(hit, root):
+                    return hit
     if is_unc_or_device(norm) or has_parent_ref(norm):
         if warn:
             warn(f"Путь текстуры отклонён (UNC или «..»): {tex}")

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -131,6 +132,7 @@ def _game_prefix(mesh: str, tex_strings: list[str], mesh_dir: Path) -> tuple[str
     """Из путей вида <префикс>\\<меш>\\data\\x.paa: префикс и корень P:/проекта, где лежит <префикс>/<меш>."""
     key = f"\\{mesh.lower()}\\data\\"
     for t in tex_strings:
+        t = re.sub(r"^[A-Za-z]:[\\/]", "", t)                      # P:\\MyMod\\mesh\\data\\x.paa → MyMod\\mesh\\data\\x.paa
         low = t.lower().replace("/", "\\")
         i = low.find(key)
         if i >= 0 or low.startswith(key[1:]):
@@ -220,6 +222,7 @@ def load_candidate(proj: Project, cand: Candidate, part_names: Optional[list[str
         proj.enabled = set(enabled)
     proj.export_opts = {"out_root": str(cand.mesh_dir.parent), "mesh_name": mesh, "prefix": prefix, "textures": True,
                         "fbx": bool(cand.model), "converter": "builtin",
+                        "drive_paths": any(re.match(r"^[A-Za-z]:[\\/]", t) for t in tex_strings),
                         "states": [s.value for s in State if s in (enabled or {State.BASE, State.DAMAGE, State.DESTRUCT})]}
     if proj.title in ("newmaterial", "mymaterial", "") or len(proj.slots) >= 1:
         proj.title = mesh

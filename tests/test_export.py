@@ -221,3 +221,64 @@ def test_validation_issues_are_collected_for_exported_names(proj, tmp_path):
     proj.spec.shared.stage(1).texture = ""
     plan = ex.plan_export(proj, OPTS(tmp_path, textures=False))
     assert any(i.code == "W212" and i.location.startswith("helmet") for i in plan.issues)
+
+
+# ---------------------------------------------------------------- полный путь с диском (P:\...)
+def _png(path, vary=True):
+    from PIL import Image
+    path.parent.mkdir(parents=True, exist_ok=True)
+    a = np.zeros((16, 16, 4), np.uint8); a[...] = (128, 128, 255, 255); a[:, :8, 0] = 20
+    Image.fromarray(a).save(path)
+    return path
+
+
+def _drive_project(tmp_path):
+    from rvmat_studio.core.project import Project
+    p = Project("helmet"); p.project_root = str(tmp_path / "P")
+    f = _png(tmp_path / "P" / "src" / "h_as.png")
+    p.set_value("shared", "Stage4.texture", "src\\h_as.paa"); p.tex_map["src\\h_as.paa"] = str(f)
+    return p
+
+
+def test_export_writes_full_drive_path_when_enabled(tmp_path):
+    p = _drive_project(tmp_path)
+    base = {"out_root": str(tmp_path / "P" / "MyMod"), "p_drive": str(tmp_path / "P"), "mesh_name": "helmet", "states": ["base"], "fbx": False}
+    plan = ex.plan_export(p, dict(base, drive_paths=True))
+    rv = next(o for o in plan.ops if o.kind == "rvmat")
+    assert "P:\\MyMod\\helmet\\data\\helmet_as.paa" in rv.text
+    plan = ex.plan_export(p, dict(base))                                 # по умолчанию (API) — без диска
+    assert "P:\\" not in next(o for o in plan.ops if o.kind == "rvmat").text and "MyMod\\helmet\\data\\helmet_as.paa" in next(o for o in plan.ops if o.kind == "rvmat").text
+
+
+def test_drive_paths_roundtrip_through_export_and_autoload(tmp_path):
+    from rvmat_studio.core import autoload
+    from rvmat_studio.core.project import Project
+    p = _drive_project(tmp_path)
+    opts = {"out_root": str(tmp_path / "P" / "MyMod"), "p_drive": str(tmp_path / "P"), "mesh_name": "helmet", "states": ["base"], "fbx": False, "drive_paths": True}
+    assert not ex.run_export(ex.plan_export(p, opts)).errors
+    q = Project("x")
+    cand = autoload.scan_folder(tmp_path / "P" / "MyMod" / "helmet")[0]
+    autoload.load_candidate(q, cand, [])
+    assert q.export_opts["drive_paths"] is True and q.export_opts["prefix"] == "MyMod"
+    again = ex.plan_export(q, dict(q.export_opts, p_drive=str(tmp_path / "P")))
+    assert "P:\\MyMod\\helmet\\data\\helmet_as.paa" in next(o for o in again.ops if o.kind == "rvmat").text
+
+
+def test_find_texture_resolves_drive_paths(tmp_path):
+    from rvmat_studio.core import texnames
+    f = _png(tmp_path / "P" / "MyMod" / "helmet" / "data" / "helmet_as.paa".replace(".paa", ".png"))
+    root = tmp_path / "P"
+    hit = texnames.find_texture("P:\\MyMod\\helmet\\data\\helmet_as.paa", str(root), None, (), allowed=[str(root)])
+    assert hit == f.resolve() or hit == f
+    assert texnames.find_texture("P:\\..\\secret\\x.paa", str(root), None, (), allowed=[str(root)]) is None
+    assert texnames.to_drive_path(f, root) == "P:\\MyMod\\helmet\\data\\helmet_as.paa"
+    assert texnames.to_drive_path(tmp_path / "elsewhere" / "x.png", root) is None
+
+
+def test_validator_accepts_p_drive_paths_but_not_other_drives():
+    from rvmat_studio.backend import Severity, validate
+    from rvmat_studio.core.presets import super_template
+    m = super_template(); m.stage(4).texture = "P:\\MyMod\\a_as.paa"; m.stage(1).texture = "C:\\x\\a_nohq.paa"
+    codes = {(i.code, i.severity) for i in validate(m)}
+    assert ("I230", Severity.INFO) in codes and ("E230", Severity.ERROR) in codes
+    assert [i for i in validate(m) if i.code == "E230" and "Stage4" in i.location] == []

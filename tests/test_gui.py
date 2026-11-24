@@ -120,6 +120,7 @@ def test_stage_visibility_does_not_modify_rvmat(app, win):
 
 
 def test_assign_texture_with_project_root_and_preview(app, win, tmp_path):
+    win.settings.full_drive_paths = False                    # здесь проверяется путь от корня проекта (без диска)
     root = tmp_path / "P"
     (root / "dz" / "mod").mkdir(parents=True)
     arr = np.zeros((32, 32, 4), np.uint8); arr[..., 1] = 220; arr[..., 3] = 255
@@ -178,7 +179,7 @@ def test_presets_tab_apply_and_save(app, win):
     pid = pt.current_id()
     win.panel.stage_eds[4].tex.setText("keep_as.paa"); win.panel.stage_eds[4].tex.editingFinished.emit()
     win.apply_preset(pid)
-    assert win.proj.spec.shared.get("specularPower") in (40.0, 20.0)
+    assert win.proj.spec.shared.get("specularPower") in (200.0, 130.0)
     assert win.proj.spec.shared.stage(4).texture == "keep_as.paa"
     pt.search.setText("стекло"); pt.cat.setCurrentIndex(0)
     assert pt.list.count() == 1
@@ -338,6 +339,7 @@ def png(path, rgba, size=16, vary=True):
 
 
 def test_assign_texture_root_base_color_and_preview(app, win, tmp_path):
+    win.settings.full_drive_paths = False                    # здесь проверяется путь от корня проекта (без диска)
     root = tmp_path / "P"
     ao = np.full((32, 32, 4), 255, np.uint8); ao[..., 1] = 60
     as_tex = png(root / "dz" / "mod" / "helm_as.png", (255, 60, 255, 255), 32, vary=False); Image.fromarray(ao).save(as_tex)
@@ -385,7 +387,7 @@ def test_auto_assign_sends_co_to_base_color(app, win, tmp_path, monkeypatch):
 def test_apply_preset_keeps_textures_and_tags_slot(app, win):
     win.panel.set_value("Stage4.texture", "keep_as.paa")
     win.apply_preset("metal_polished")
-    assert win.proj.spec.shared.stage(4).texture == "keep_as.paa" and win.proj.spec.shared.get("specularPower") == 40.0
+    assert win.proj.spec.shared.stage(4).texture == "keep_as.paa" and win.proj.spec.shared.get("specularPower") == 200.0
     assert win.proj.slot.preset_tag == "metal_polished"
 
 
@@ -699,3 +701,30 @@ def test_window_starts_with_corrupt_saved_geometry(app, tmp_path):
     w = MainWindow(s, PresetManager(tmp_path / "p")); w.show()
     assert w.width() > 300
     w.proj.dirty = False; w.close()
+
+
+def test_assign_texture_writes_full_drive_path_by_default(app, win, tmp_path):
+    root = tmp_path / "P"
+    f = png(root / "MyMod" / "helmet" / "data" / "helmet_as.png", (255, 60, 255, 255), 32, vary=False)
+    win.settings.p_drive = str(root)
+    win.proj.project_root = str(root); win.rebuild_resolver()
+    assert win.settings.full_drive_paths is True
+    win.assign_texture(4, f)
+    assert win.proj.spec.shared.stage(4).texture == "P:\\MyMod\\helmet\\data\\helmet_as.paa"
+    assert win.resolver.find(win.proj.spec.shared.stage(4).texture) is not None          # путь с диском находит файл
+    win.preview.opts.view = "ao"
+    assert win.preview.render_sync().shape[2] >= 3
+    win.settings.full_drive_paths = False
+    win.assign_texture(4, f)
+    assert win.proj.spec.shared.stage(4).texture == "MyMod\\helmet\\data\\helmet_as.paa"
+
+
+def test_export_dialog_drive_checkbox_and_settings(app, export_win, tmp_path):
+    d = ExportDialog(export_win)
+    assert d.drive.isChecked() and d.opts()["drive_paths"] is True            # по умолчанию — полный путь с диском
+    d.drive.setChecked(False)
+    assert d.opts()["drive_paths"] is False
+    sd = SettingsDialog(Settings())
+    assert sd.full_paths.isChecked()
+    sd.full_paths.setChecked(False); sd.accept()
+    assert sd.s.full_drive_paths is False

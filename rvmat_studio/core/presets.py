@@ -89,20 +89,21 @@ def _b(id_, name, cat, desc, **kw) -> Preset:
     return Preset(name, cat, desc, super_template(**kw).to_text(), id=id_, builtin=True)
 
 
-# Значения — стартовые ориентиры для типа материала (НЕ официальные значения BI).
+# Значения — стартовые ориентиры для типа материала (НЕ официальные значения BI). specularPower подобран под наблюдение в игре:
+# 1 — матовый, ~100 — слегка глянцевый, 200 — сильно глянцевый (см. core/render.py: POWER_GLOSS_EXP), поэтому глянцевым материалам — 130–200.
 # Структура (Super, 7 стадий, пути env/fresnel/DT) взята из образцов eyemask_*.
 BUILTIN = [
-    _b("metal_polished", "Металл полированный", "Металл", "Высокий specular, резкий блик", specular=1.0, power=40, fresnel=(0.6, 3.0), ambient=0.8, diffuse=0.8),
-    _b("metal_worn", "Металл потёртый", "Металл", "Средний блик, шероховатая поверхность", specular=0.6, power=20, fresnel=(0.7, 2.5)),
-    _b("plastic_glossy", "Пластик глянцевый", "Пластик", "Широкий светлый блик", specular=0.8, power=30, fresnel=(1.4, 0.0)),
-    _b("plastic_matte", "Пластик матовый", "Пластик", "Слабый блик", specular=0.3, power=8, fresnel=(1.4, 0.0)),
-    _b("wood", "Дерево", "Дерево", "Матовая поверхность, минимальный блик", specular=0.15, power=6, fresnel=(1.3, 0.0)),
-    _b("fabric", "Ткань", "Ткань", "Почти без блика", specular=0.05, power=2, fresnel=(1.3, 0.0)),
-    _b("leather", "Кожа", "Кожа", "Мягкий блик", specular=0.35, power=10, fresnel=(1.4, 0.0)),
-    _b("glass", "Стекло", "Стекло", "Сильные отражения", specular=1.0, power=60, fresnel=(1.5, 0.0), emissive=(0, 0, 0, 0)),
-    _b("rubber", "Резина", "Резина", "Тёмный матовый материал", specular=0.1, power=4, fresnel=(1.4, 0.0)),
-    _b("stone", "Камень", "Камень", "Шероховатый, слабый блик", specular=0.2, power=5, fresnel=(1.5, 0.0)),
-    _b("concrete", "Бетон", "Бетон", "Матовый", specular=0.1, power=3, fresnel=(1.5, 0.0)),
+    _b("metal_polished", "Металл полированный", "Металл", "Высокий specular, резкий блик", specular=1.0, power=200, fresnel=(0.6, 3.0), ambient=0.8, diffuse=0.8),
+    _b("metal_worn", "Металл потёртый", "Металл", "Средний блик, шероховатая поверхность", specular=0.6, power=130, fresnel=(0.7, 2.5)),
+    _b("plastic_glossy", "Пластик глянцевый", "Пластик", "Широкий светлый блик", specular=0.8, power=170, fresnel=(1.4, 0.0)),
+    _b("plastic_matte", "Пластик матовый", "Пластик", "Слабый блик", specular=0.3, power=70, fresnel=(1.4, 0.0)),
+    _b("wood", "Дерево", "Дерево", "Матовая поверхность, минимальный блик", specular=0.15, power=35, fresnel=(1.3, 0.0)),
+    _b("fabric", "Ткань", "Ткань", "Почти без блика", specular=0.05, power=20, fresnel=(1.3, 0.0)),
+    _b("leather", "Кожа", "Кожа", "Мягкий блик", specular=0.35, power=90, fresnel=(1.4, 0.0)),
+    _b("glass", "Стекло", "Стекло", "Сильные отражения", specular=1.0, power=200, fresnel=(1.5, 0.0), emissive=(0, 0, 0, 0)),
+    _b("rubber", "Резина", "Резина", "Тёмный матовый материал", specular=0.1, power=30, fresnel=(1.4, 0.0)),
+    _b("stone", "Камень", "Камень", "Шероховатый, слабый блик", specular=0.2, power=35, fresnel=(1.5, 0.0)),
+    _b("concrete", "Бетон", "Бетон", "Матовый", specular=0.1, power=25, fresnel=(1.5, 0.0)),
     _b("generic", "Универсальный (как eyemask)", "Другие материалы", "Значения из образцов: specular 0.8, power 15, fresnel 0.88/1.89", ),
 ]
 

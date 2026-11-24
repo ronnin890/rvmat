@@ -67,6 +67,16 @@ class RenderOptions:
     hdri: object = None
 
 
+# Глянец от specularPower: по наблюдению в игре/Workbench (1 — абсолютно матовый, 100 — слегка глянцевый, 200 — сильно глянцевый)
+# отражения окружения растут с мощностью. pg = (p/200)^POWER_GLOSS_EXP: 1→≈0, 100→≈0.35, 200→1. Калибровка по трём точкам, не формула шейдера.
+POWER_GLOSS_EXP = 1.5
+POWER_MAX = 200.0
+
+
+def power_gloss(power: float) -> float:
+    return min(max(power / POWER_MAX, 0.0), 1.0) ** POWER_GLOSS_EXP
+
+
 TexResolver = Callable[[str], Optional[np.ndarray]]   # игровой путь -> RGBA float32 [0..1] или None
 
 
@@ -405,9 +415,10 @@ def shade(geo: Geo, mat: Material, o: RenderOptions, resolve: TexResolver):
     diffuse_term = albedo * detail * (direct + ambient)
     spec_col = spc[:3]
     spec_term = spec_col * (nh ** sp_exp)[:, None] * (terminator * ks * scale)[:, None] * sun_c
-    w_env = (f32(0.3) + f32(0.7) * gloss)[:, None]                            # шероховатое отражает «размытое» окружение
+    pg = f32(power_gloss(power))                                              # мощность 1 → матовый, 200 → зеркальные отражения
+    w_env = (f32(0.3) + f32(0.7) * gloss * np.sqrt(pg))[:, None]              # шероховатое отражает «размытое» окружение
     env_eff = envc * w_env + amb_env * (1 - w_env)
-    refl_term = (f32(0.5) * ao + f32(0.5)) * env_eff * spec_col * ks[:, None] * f32(o.env_gain)
+    refl_term = (f32(0.5) * ao + f32(0.5)) * env_eff * spec_col * ks[:, None] * f32(o.env_gain) * pg
     emis = emi[:3] + albedo * glow[:, None]
     lin = diffuse_term + spec_term + refl_term + emis
 

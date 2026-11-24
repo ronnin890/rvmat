@@ -189,3 +189,48 @@ def test_no_moderngl_means_cpu_fallback(monkeypatch):
     assert not G.available()
     with pytest.raises(G.GLUnavailable):
         G.GLRenderer()
+
+
+# ---------------------------------------------------------------- глянец от specularPower (калибровка по наблюдению в игре)
+def _sphere_lum(img, bg):
+    d = np.abs(img[..., :3].astype(int) - bg[..., :3].astype(int)).sum(-1) > 6
+    return img[..., :3].astype(float).mean(-1)[d].mean() / 255
+
+
+def _lum_for(power, spec, renderer, gl=None):
+    m = super_template(specular=spec, power=power)
+    o = RenderOptions(width=200, height=200, shape="Сфера")
+    mesh = get_shape("Сфера")
+    res = make_resolver(None)
+    f = (lambda t: None)
+    if gl is not None:
+        img = gl.call(lambda r: r.render(m, o, f, mesh, None))
+        far = RenderOptions(width=200, height=200, shape="Сфера", zoom=0.01)
+        bg = gl.call(lambda r: r.render(m, far, f, mesh, None))
+    else:
+        img = render(m, o, res, mesh, RenderCache())
+        bg = render(m, RenderOptions(width=200, height=200, shape="Сфера", zoom=0.01), res, mesh, RenderCache())
+    return _sphere_lum(img, bg)
+
+
+def test_cpu_gloss_grows_with_specular_power():
+    """В игре: 1 — абсолютно матовый, 100 — слегка глянцевый, 200 — сильно глянцевый."""
+    base = _lum_for(100, 0.0, "cpu")
+    gain = {p: _lum_for(p, 0.8, "cpu") - base for p in (1, 100, 200)}
+    assert gain[1] < 0.05                                           # почти нет блеска
+    assert gain[1] < gain[100] < gain[200]
+    assert gain[200] > 2.5 * gain[1] and gain[200] > 1.5 * gain[100]
+
+
+def test_gl_gloss_grows_with_specular_power_like_cpu(gl):
+    base = _lum_for(100, 0.0, "gl", gl)
+    gain = {p: _lum_for(p, 0.8, "gl", gl) - base for p in (1, 100, 200)}
+    assert gain[1] < 0.05 and gain[1] < gain[100] < gain[200]
+    for p in (1, 100, 200):                                         # GPU и CPU согласованы
+        assert abs(gain[p] - (_lum_for(p, 0.8, "cpu") - _lum_for(100, 0.0, "cpu"))) < 0.03
+
+
+def test_power_gloss_curve_constants():
+    from rvmat_studio.core.render import power_gloss
+    assert power_gloss(0) == 0 and power_gloss(200) == 1 and power_gloss(400) == 1
+    assert 0.3 < power_gloss(100) < 0.4 and power_gloss(1) < 0.001

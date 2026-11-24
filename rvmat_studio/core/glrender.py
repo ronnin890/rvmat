@@ -24,7 +24,7 @@ except ImportError:                                           # без moderngl 
 
 from ..backend.procedural import is_procedural, parse_procedural
 from .logs import log_exc
-from .render import LIGHTING, RenderOptions, _rot, _uv_matrix
+from .render import LIGHTING, POWER_GLOSS_EXP, POWER_MAX, RenderOptions, _rot, _uv_matrix
 from .textures import load_rgba
 
 VERT = """#version 330 core
@@ -93,8 +93,9 @@ void main(){
     vec3 ambient = amb * ambEnv * ambK * 2.0 * (0.5 * ao + 0.5);
     vec3 diffuseT = albedo * detail * (direct + ambient);
     vec3 specT = spc * pow(nh, spExp) * (terminator * ks * scale) * sunC;
-    float wEnv = 0.3 + 0.7 * gloss; vec3 envEff = envc * wEnv + ambEnv * (1.0 - wEnv);
-    vec3 reflT = (0.5 * ao + 0.5) * envEff * spc * ks * envGain;
+    float pg = pow(clamp(power / @POWER_MAX@, 0.0, 1.0), @POWER_GLOSS_EXP@);
+    float wEnv = 0.3 + 0.7 * gloss * sqrt(pg); vec3 envEff = envc * wEnv + ambEnv * (1.0 - wEnv);
+    vec3 reflT = (0.5 * ao + 0.5) * envEff * spc * ks * envGain * pg;
     vec3 lin = diffuseT + specT + reflT + emi;
     if (view == 1 || view == 8) lin = albedo; else if (view == 2) lin = pow(Nf * 0.5 + 0.5, vec3(2.2));
     else if (view == 3) lin = vec3(specI); else if (view == 4) lin = vec3(smdiR); else if (view == 5) lin = vec3(gloss);
@@ -149,7 +150,7 @@ class GLRenderer:
         self.info = f"{ctx.info.get('GL_RENDERER', '?')} · OpenGL {ctx.info.get('GL_VERSION', '?').split()[0]}"
         self.samples = max(0, min(samples, int(ctx.info.get("GL_MAX_SAMPLES", 4) or 0)))
         self.max_tex = min(int(ctx.info.get("GL_MAX_TEXTURE_SIZE", 4096)), MAX_TEX)
-        self.prog = ctx.program(vertex_shader=VERT, fragment_shader=FRAG)
+        self.prog = ctx.program(vertex_shader=VERT, fragment_shader=FRAG.replace("@POWER_MAX@", f"{POWER_MAX:.1f}").replace("@POWER_GLOSS_EXP@", f"{POWER_GLOSS_EXP:.3f}"))
         self.bg = ctx.program(vertex_shader=BG_V, fragment_shader=BG_F)
         self.line = ctx.program(vertex_shader=VERT, fragment_shader=LINE_F)
         self.vao_bg = ctx.vertex_array(self.bg, [])

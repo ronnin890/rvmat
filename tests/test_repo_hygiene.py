@@ -66,7 +66,7 @@ def test_lock_file_has_hashes_and_matches_requirements():
     assert lock.count("--hash=sha256:") >= 4
     for name in ("numpy", "pillow", "moderngl"):
         assert re.search(rf"^{name}==", lock, re.M | re.I), name
-    assert "--require-hashes" in (ROOT / "start.bat").read_text("utf-8")
+    assert "--require-hashes" in (ROOT / "scripts/bootstrap.py").read_text("utf-8")
 
 
 def test_dependency_upper_bounds():
@@ -83,5 +83,19 @@ def test_docs_and_gitignore():
 
 
 def test_start_bat_guards_cd_before_rmdir():
-    t = (ROOT / "start.bat").read_bytes().decode("utf-8")
+    t = (ROOT / "start.bat").read_bytes().decode("ascii")
     assert t.index('cd /d "%~dp0" ||') < t.index("rmdir /s /q")
+
+
+def test_version_is_consistent_everywhere():
+    from rvmat_studio import __version__
+    assert re.search(rf'(?m)^version = "{re.escape(__version__)}"', (ROOT / "pyproject.toml").read_text("utf-8"))
+    assert f'#define AppVersion "{__version__}"' in (ROOT / "packaging/installer.iss").read_text("utf-8")
+    assert f"## {__version__}" in (ROOT / "CHANGELOG.md").read_text("utf-8")
+
+
+def test_start_bat_is_ascii_without_rem_in_blocks():
+    raw = (ROOT / "start.bat").read_bytes()
+    raw.decode("ascii")                                          # cmd.exe плохо переносит UTF-8 в блоках и метках
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")
+    assert b"bootstrap.py" in raw

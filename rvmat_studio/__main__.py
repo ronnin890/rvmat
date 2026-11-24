@@ -23,7 +23,41 @@ def cli(a) -> int:
     return 2
 
 
+def _crash() -> int:
+    """Ошибка при запуске (до появления окна): в консоль, в файл журнала и в окно сообщения."""
+    import traceback
+    text = traceback.format_exc()
+    print(text, file=sys.stderr)
+    where = ""
+    try:
+        from .core.settings import app_dir
+        d = app_dir() / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "startup_error.log").write_text(text, "utf-8")
+        where = f"\n\nПодробности: {d / 'startup_error.log'}"
+    except Exception:
+        pass
+    try:
+        import tkinter
+        from tkinter import messagebox
+        r = tkinter.Tk(); r.withdraw()
+        messagebox.showerror("DayZ RVMAT Studio", "Не удалось запустить программу:\n\n" + text.strip().splitlines()[-1] + where)
+        r.destroy()
+    except Exception:
+        pass
+    return 1
+
+
 def main():
+    try:
+        return _main()
+    except SystemExit:
+        raise
+    except BaseException:
+        return _crash()
+
+
+def _main():
     a = sys.argv[1:]
     if a and a[0] in ("kit", "validate"):
         return cli(a)

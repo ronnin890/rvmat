@@ -5,8 +5,9 @@
 
 ## Установка и запуск (Windows)
 
-1. Нужен Python 3.10+ с python.org (в нём уже есть tkinter).
-2. Запустите **`start.bat`**. При первом запуске он создаёт папку `.venv` и ставит `numpy` и `Pillow` (≈ 40 МБ) и необязательный `moderngl` для GPU-рендера (≈ 1 МБ) — обычно 10–20 секунд. Дальше программа стартует мгновенно. Тесты при запуске **не** гоняются (они в `run_tests.bat`).
+1. Нужен Python 3.10+ с python.org (в нём уже есть tkinter; при установке отметьте «Add python.exe to PATH»).
+2. Запустите **`start.bat`**. При первом запуске он создаёт папку `.venv` и ставит `numpy`, `Pillow` (≈ 40 МБ) и необязательный `moderngl` для GPU-рендера — обычно 1–2 минуты, **ход установки виден в консоли**; окно программы появится после неё. Дальше программа стартует мгновенно. Если окно не открылось, консоль покажет причину и сохранит её в `%TEMP%\rvmat_studio_start.log`.
+3. Без установки Python: готовый установщик/zip из раздела «Версия без установки Python» ниже.
 
 Из консоли: `pip install -r requirements.txt -r requirements-gl.txt && python -m rvmat_studio`.
 CLI без окна: `python -m rvmat_studio kit base.rvmat myhelmet out/` · `python -m rvmat_studio validate file.rvmat`.
